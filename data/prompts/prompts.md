@@ -1,4 +1,4 @@
-# ESO-CHAT • Modelos de Prompts
+# SAFETY-CHAT • Modelos de Prompts
 
 ## Texto
 
