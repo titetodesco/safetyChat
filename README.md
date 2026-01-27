@@ -1,8 +1,4 @@
-Versão 1 - https://eso-chat.streamlit.app/ - app_chat.py
-
-Versão 2 - https://eso-chat-versao2.streamlit.app/ - app_chat_novo_correto.py
-
-Versão 3 - https://eso-chat-novo3.streamlit.app/ - app_chat_novo.py
+Versão  - https://safety-chat.streamlit.app/ - app_safety_chat.py
 
 1) Estrutura recomendada de pastas
 eso-chat/
