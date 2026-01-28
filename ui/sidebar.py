@@ -3,7 +3,7 @@ from __future__ import annotations
 import streamlit as st
 from typing import List, Tuple
 import pandas as pd
-from ..core.sphera import get_sphera_location_col, location_options
+from core.sphera import get_sphera_location_col, location_options
 
 def render_prompts_selector(prompts_bank: str):
     st.sidebar.subheader("Assistente de Prompts")
