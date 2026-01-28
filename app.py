@@ -13,7 +13,7 @@ from core.dictionaries import aggregate_dict_matches_over_hits
 from core.context_builder import hits_dataframe, build_dic_matches_md, build_sphera_context_md
 from core.data_loader import load_dicts
 
-from service.llm_client import chat
+from services.llm_client import chat
 
 
 st.set_page_config(page_title="SAFETY • CHAT — ESO", layout="wide")
