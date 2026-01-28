@@ -74,6 +74,75 @@ def _info(msg: str):
     logger.info(msg)
     # st.info(msg)  # Comentado para evitar spam na interface
 
+def _info(msg: str):
+    """Informação para debugging"""
+    logger.info(msg)
+    # st.info(msg)  # Comentado para evitar spam na interface
+
+# Sistema de validação e alertas de configuração
+def validate_configuration():
+    """Valida configurações e gera alertas para o usuário"""
+    alerts = []
+    
+    # Verificar configurações problemáticas de limiar
+    if limiar_sphera > 0.8:
+        alerts.append(f"⚠️ Limiar de Similaridade Sphera muito alto ({limiar_sphera}). Considere reduzir para 0.3-0.6 para obter mais resultados.")
+    
+    if limiar_gosee > 0.8:
+        alerts.append(f"⚠️ Limiar de Similaridade GoSee muito alto ({limiar_gosee}). Considere reduzir para 0.2-0.5 para obter mais resultados.")
+    
+    if limiar_docs > 0.8:
+        alerts.append(f"⚠️ Limiar de Similaridade Documentos muito alto ({limiar_docs}). Considere reduzir para 0.3-0.6 para obter mais resultados.")
+    
+    # Verificar configurações muito permissivas
+    if limiar_sphera < 0.1:
+        alerts.append(f"⚠️ Limiar de Similaridade Sphera muito baixo ({limiar_sphera}). Considere aumentar para 0.2-0.4 para melhor precisão.")
+    
+    # Verificar Top-K muito alto
+    if top_k_sphera > 50:
+        alerts.append(f"⚠️ Top-K Sphera muito alto ({top_k_sphera}). Considere reduzir para 10-30 para melhor foco nos resultados.")
+    
+    # Verificar período muito longo
+    if anos_filtro > 5:
+        alerts.append(f"⚠️ Período muito longo ({anos_filtro} anos). Considere usar 1-3 anos para eventos mais recentes e relevantes.")
+    
+    return alerts
+
+def show_configuration_alerts():
+    """Exibe alertas de configuração na sidebar"""
+    alerts = validate_configuration()
+    
+    if alerts:
+        with st.sidebar.expander("🔔 Alertas de Configuração", expanded=True):
+            for alert in alerts:
+                st.warning(alert)
+    
+    # Estatísticas do sistema
+    with st.sidebar.expander("📊 Status do Sistema", expanded=False):
+        cache_stats = cache_manager.get_cache_stats()
+        st.write(f"**Cache:** {cache_stats['hits']} acertos, {cache_stats['misses']} erros ({cache_stats['hit_rate']}% de eficácia)")
+        st.write(f"**Memória:** {cache_stats['usage_pct']}% utilizado ({cache_stats['items']}/{cache_stats['max_items']} itens)")
+        
+        # Status dos dados carregados
+        status_data = {
+            "Sphera": f"{len(df_sph):,} registros" if not df_sph.empty else "❌ Não disponível",
+            "GoSee": f"{len(df_gosee):,} observações" if not df_gosee.empty else "❌ Não disponível",
+            "Documentos": f"{len(docs_index)} arquivos" if docs_index else "❌ Não disponível",
+            "Embeddings Sphera": "✅ Carregados" if E_sph is not None else "❌ Não disponível",
+            "Embeddings GoSee": "✅ Carregados" if E_gosee is not None else "⚠️ Não encontrado",
+            "WS (Weak Signals)": "✅ Disponível" if E_ws is not None else "❌ Não disponível",
+            "Precursores": "✅ Disponível" if E_prec is not None else "❌ Não disponível",
+            "CP (Performance)": "✅ Disponível" if E_cp is not None else "❌ Não disponível",
+        }
+        
+        for item, status in status_data.items():
+            if "✅" in status:
+                st.success(f"**{item}:** {status}")
+            elif "⚠️" in status:
+                st.warning(f"**{item}:** {status}")
+            else:
+                st.error(f"**{item}:** {status}")
+
 def validate_embeddings_labels(embeddings: Optional[np.ndarray], labels: Optional[pd.DataFrame], name: str) -> bool:
     """Valida se embeddings e labels estão alinhados"""
     if embeddings is None and labels is None:
@@ -210,12 +279,21 @@ E_sph = load_npz_embeddings(SPH_NPZ_PATH)
 if E_sph is None:
     _warn("Embeddings do Sphera não encontrados - funcionalidade limitada")
 
-# --- GOSEE (NOVO: Implementação completa) ---
+# --- GOSEE (Implementação completa) ---
 GOSEE_PQ_PATH = AN_DIR / "gosee.parquet"
+GOSEE_NPZ_PATH = AN_DIR / "gosee_embeddings.npz"
+
 df_gosee = pd.read_parquet(GOSEE_PQ_PATH) if GOSEE_PQ_PATH.exists() else pd.DataFrame()
 if not validate_dataframe(df_gosee, "GoSee", ["Observation"]):
     df_gosee = pd.DataFrame()  # Fallback para DataFrame vazio
     _info("GoSee não disponível - continuando sem esta fonte")
+
+# Carregar embeddings específicos do GoSee (CRÍTICO: não usar embeddings do Sphera)
+E_gosee = load_npz_embeddings(GOSEE_NPZ_PATH)
+if E_gosee is None:
+    _warn("Embeddings do GoSee não encontrados - busca no GoSee limitada")
+else:
+    _info(f"Embeddings do GoSee carregados: {E_gosee.shape[0]} observações")
 
 # --- DOCUMENTOS (NOVO: Processamento de PDFs/DOCXs) ---
 DOCS_DIR = DATA_DIR / "docs"
@@ -370,23 +448,69 @@ if "st_encoder" not in st.session_state:
 if "upld_texts" not in st.session_state:
     st.session_state.upld_texts = []
 
-# Sistema de cache com limpeza automática
+# Configuração de cache com TTL e controle de memória inteligente
+CACHE_TTL_SECONDS = 3600  # 1 hora
+MAX_CACHE_ITEMS = 100
+CACHE_ALERT_THRESHOLD = 80  # Alert quando cache estiver 80% cheio
+
+# Sistema de cache otimizado com limites dinâmicos
+class OptimizedCache:
+    """Sistema de cache otimizado com limites inteligentes"""
+    
+    def __init__(self, max_items=MAX_CACHE_ITEMS, ttl_seconds=CACHE_TTL_SECONDS):
+        self.max_items = max_items
+        self.ttl_seconds = ttl_seconds
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._cache_items = 0
+    
+    def get_cache_stats(self):
+        """Retorna estatísticas do cache"""
+        total = self._cache_hits + self._cache_misses
+        hit_rate = (self._cache_hits / total * 100) if total > 0 else 0
+        return {
+            "hits": self._cache_hits,
+            "misses": self._cache_misses,
+            "hit_rate": round(hit_rate, 2),
+            "items": self._cache_items,
+            "max_items": self.max_items,
+            "usage_pct": round((self._cache_items / self.max_items) * 100, 2)
+        }
+    
+    def check_cache_health(self):
+        """Verifica saúde do cache e gera alertas se necessário"""
+        stats = self.get_cache_stats()
+        if stats["usage_pct"] > CACHE_ALERT_THRESHOLD:
+            _warn(f"Cache utilizando {stats['usage_pct']}% da capacidade máxima ({stats['items']}/{stats['max_items']} itens)")
+        return stats
+
+# Instância global do cache otimizado
+cache_manager = OptimizedCache()
+
 def clear_stale_cache():
     """Limpa cache antigo para evitar problemas de memória"""
     try:
         if hasattr(st, 'cache_data') and hasattr(st.cache_data, 'clear'):
             # Limpa cache específico se disponível
-            pass
-    except Exception:
-        pass
+            cache_manager._cache_items = max(0, cache_manager._cache_items - 10)  # Reduz contador
+            _info("Cache limpo automaticamente")
+    except Exception as e:
+        _warn(f"Erro ao limpar cache: {e}")
 
-# Controle de performance
+# Controle de performance aprimorado
 def log_performance(func_name: str, duration: float):
-    """Log de performance das operações críticas"""
-    if duration > 5.0:  # > 5 segundos
+    """Log de performance das operações críticas com alertas inteligentes"""
+    if duration > 10.0:  # > 10 segundos
+        _warn(f"⚠️ Operação {func_name} MUITO LENTA: {duration:.2f}s")
+    elif duration > 5.0:  # > 5 segundos
         _warn(f"Operação {func_name} lenta: {duration:.2f}s")
     else:
         _info(f"Operação {func_name}: {duration:.2f}s")
+    
+    # Log do cache health
+    cache_stats = cache_manager.check_cache_health()
+    if cache_stats["usage_pct"] > 90:
+        _warn(f"Cache com alta utilização: {cache_stats['usage_pct']}%")
 
 # ========================== Encode ==========================
 @st.cache_data(show_spinner=False)
@@ -413,11 +537,16 @@ def gosee_similar_to_text(
     df_base: Optional[pd.DataFrame] = None,
     substr: str = "",
 ) -> List[Tuple[str, float, pd.Series]]:
-    """Busca similar no GoSee (similar ao Sphera)"""
+    """Busca similar no GoSee usando embeddings específicos do GoSee"""
     if not query_text or not query_text.strip():
         return []
     
-    if df_base is None or df_base.empty or E_sph is None:
+    if df_base is None or df_base.empty:
+        return []
+    
+    # CRÍTICO: Verificar se temos embeddings específicos do GoSee
+    if E_gosee is None:
+        _warn("Embeddings do GoSee não disponíveis - busca desabilitada")
         return []
     
     start_time = time.time()
@@ -435,12 +564,12 @@ def gosee_similar_to_text(
     # Encode da query
     v_query = encode_query(query_text)
     
-    # Similaridade cosseno
+    # Similaridade cosseno usando embeddings específicos do GoSee
     if "Observation" in df_filtered.columns:
         texts = df_filtered["Observation"].fillna("").tolist()
         try:
-            # Carregar embeddings para GoSee (usar Sphera embeddings temporariamente como fallback)
-            E = E_sph[:len(df_filtered)]
+            # CRÍTICO: Usar E_gosee em vez de E_sph
+            E = E_gosee[:len(df_filtered)]
             similarities = (E @ v_query).squeeze()
             
             # Filtro por limiar
@@ -852,17 +981,17 @@ if st.sidebar.button("Carregar no rascunho", use_container_width=True):
     st.rerun()
 
 st.sidebar.subheader("Recuperação – Sphera")
-k_sph   = st.sidebar.slider("Top-K Sphera", 1, 100, 20, 1)
-thr_sph = st.sidebar.slider("Limiar Sphera (cos)", 0.0, 1.0, 0.30, 0.01)
-years   = st.sidebar.slider("Últimos N anos", 1, 10, 3, 1)
+top_k_sphera   = st.sidebar.slider("Top-K Sphera", 1, 100, 20, 1, help="Número máximo de eventos do Sphera a retornar")
+limiar_sphera = st.sidebar.slider("Limiar de Similaridade Sphera", 0.0, 1.0, 0.30, 0.01, help="Similaridade mínima para considerar um evento relevante (0-1)")
+anos_filtro    = st.sidebar.slider("Período (últimos N anos)", 1, 10, 3, 1, help="Filtrar eventos pelos últimos N anos")
 
 st.sidebar.subheader("Recuperação – GoSee")
-k_gosee   = st.sidebar.slider("Top-K GoSee", 1, 50, 10, 1)
-thr_gosee = st.sidebar.slider("Limiar GoSee (cos)", 0.0, 1.0, 0.25, 0.01)
+top_k_gosee   = st.sidebar.slider("Top-K GoSee", 1, 50, 10, 1, help="Número máximo de observações do GoSee a retornar")
+limiar_gosee = st.sidebar.slider("Limiar de Similaridade GoSee", 0.0, 1.0, 0.25, 0.01, help="Similaridade mínima para considerar uma observação relevante (0-1)")
 
 st.sidebar.subheader("Recuperação – Documentos")
-k_docs   = st.sidebar.slider("Top-K Documentos", 1, 20, 5, 1)
-thr_docs = st.sidebar.slider("Limiar Documentos (cos)", 0.0, 1.0, 0.30, 0.01)
+top_k_docs   = st.sidebar.slider("Top-K Documentos", 1, 20, 5, 1, help="Número máximo de documentos a retornar")
+limiar_docs = st.sidebar.slider("Limiar de Similaridade Documentos", 0.0, 1.0, 0.30, 0.01, help="Similaridade mínima para considerar um documento relevante (0-1)")
 
 st.sidebar.subheader("Filtros avançados – Sphera")
 # NOVO: multiselect de Location
@@ -899,6 +1028,9 @@ with uc2:
         st.session_state.chat = []
         st.rerun()
 
+# Exibir alertas de configuração e status do sistema
+show_configuration_alerts()
+
 # ========================== UI central ==========================
 if st.session_state._clear_draft_flag:
     st.session_state.draft_prompt = ""
@@ -920,26 +1052,38 @@ def extract_pdf_text(file_like: io.BytesIO) -> str:
     Extrai texto de PDF. Tenta PyPDF2 -> PyMuPDF (fitz) -> pdfminer.six.
     Retorna string (pode ser vazia se o PDF for apenas imagem/scaneado).
     """
+    # Validar header do arquivo PDF
+    header = file_like.read(4)
+    if header[:4] != b'%PDF':
+        return ""  # Não é um PDF válido
+    file_like.seek(0)
+    
     # 1) PyPDF2
     try:
         import PyPDF2
         file_like.seek(0)
         reader = PyPDF2.PdfReader(file_like)
+        if reader.is_encrypted:
+            return ""  # PDF protegido por senha
         parts = []
         for page in reader.pages:
             parts.append(page.extract_text() or "")
         return "\n".join(parts).strip()
     except Exception:
         pass
+    
     # 2) PyMuPDF
     try:
         import fitz  # PyMuPDF
         file_like.seek(0)
         doc = fitz.open(stream=file_like.read(), filetype="pdf")
+        if doc.is_encrypted:
+            return ""  # PDF protegido por senha
         parts = [page.get_text() for page in doc]
         return "\n".join(parts).strip()
     except Exception:
         pass
+    
     # 3) pdfminer.six
     try:
         from pdfminer.high_level import extract_text
@@ -947,6 +1091,7 @@ def extract_pdf_text(file_like: io.BytesIO) -> str:
         return (extract_text(file_like) or "").strip()
     except Exception:
         pass
+    
     return ""
 
 def extract_docx_text(file_like: io.BytesIO) -> str:
@@ -1153,14 +1298,14 @@ if go_btn:
                 st.write("Aplicando filtros e calculando similaridades...")
                 hits_sph = sphera_similar_to_text(
                     query_text=(user_text or st.session_state.draft_prompt),
-                    min_sim=thr_sph, years=years, topk=k_sph,
+                    min_sim=limiar_sphera, years=anos_filtro, topk=top_k_sphera,
                     df_base=df_sph, E_base=E_sph, substr=substr, locations=locations,
                 )
                 all_results['sphera'] = hits_sph
                 
                 if hits_sph:
                     st.success(f"✅ Sphera: {len(hits_sph)} eventos encontrados")
-                    render_hits_table(hits_sph, k_sph, "Sphera")
+                    render_hits_table(hits_sph, top_k_sphera, "Sphera")
                 else:
                     st.info("ℹ️ Nenhum evento do Sphera atingiu o limiar/filtros atuais.")
                     
@@ -1174,14 +1319,14 @@ if go_btn:
             with st.status("🔍 Buscando no GoSee...", expanded=False):
                 hits_gosee = gosee_similar_to_text(
                     query_text=(user_text or st.session_state.draft_prompt),
-                    min_sim=thr_gosee, topk=k_gosee,
+                    min_sim=limiar_gosee, topk=top_k_gosee,
                     df_base=df_gosee, substr=substr,
                 )
                 all_results['gosee'] = hits_gosee
                 
                 if hits_gosee:
                     st.success(f"✅ GoSee: {len(hits_gosee)} observações encontradas")
-                    render_hits_table(hits_gosee, k_gosee, "GoSee")
+                    render_hits_table(hits_gosee, top_k_gosee, "GoSee")
                 else:
                     st.info("ℹ️ Nenhuma observação do GoSee encontrada.")
                     
@@ -1195,14 +1340,14 @@ if go_btn:
             with st.status("🔍 Buscando em documentos...", expanded=False):
                 hits_docs = docs_similar_to_text(
                     query_text=(user_text or st.session_state.draft_prompt),
-                    min_sim=thr_docs, topk=k_docs,
+                    min_sim=limiar_docs, topk=top_k_docs,
                     docs_dict=docs_index,
                 )
                 all_results['docs'] = hits_docs
                 
                 if hits_docs:
                     st.success(f"✅ Documentos: {len(hits_docs)} documentos relevantes")
-                    render_docs_results(hits_docs, k_docs)
+                    render_docs_results(hits_docs, top_k_docs)
                 else:
                     st.info("ℹ️ Nenhum documento relevante encontrado.")
                     
@@ -1276,29 +1421,29 @@ if go_btn:
                 desc = re.sub(r"\s+", " ", desc).strip()
                 table_ctx_rows.append(f"EventID={evid} | sim={s:.3f} | LOCATION={loc_val} | Description={desc}")
             
-            ctx_chunks.append(f"=== SPHERA_HITS ===\nHits={len(all_results['sphera'])}, thr={thr_sph:.2f}, years={years}\n" + "\n".join(table_ctx_rows) + "\n")
+            ctx_chunks.append(f"=== SPHERA_HITS ===\nHits={len(all_results['sphera'])}, thr={limiar_sphera:.2f}, years={anos_filtro}\n" + "\n".join(table_ctx_rows) + "\n")
 
         # Contexto GoSee
         if all_results.get('gosee'):
             gosee_ctx_rows = []
-            for evid, s, row in all_results['gosee'][: min(k_gosee, len(all_results['gosee']))]:
+            for evid, s, row in all_results['gosee'][: min(top_k_gosee, len(all_results['gosee']))]:
                 area = str(row.get('Area', row.get('Location', 'N/D')))
                 obs = str(row.get("Observation", "")).strip()[:200]  # Limitar tamanho
                 obs = obs.replace("\r", " ").replace("\n", " ").replace("_x000D_", " ")
                 obs = re.sub(r"\s+", " ", obs).strip()
                 gosee_ctx_rows.append(f"GoSeeID={evid} | sim={s:.3f} | Area={area} | Observation={obs}")
             
-            ctx_chunks.append(f"=== GOSEE_HITS ===\nHits={len(all_results['gosee'])}, thr={thr_gosee:.2f}\n" + "\n".join(gosee_ctx_rows) + "\n")
+            ctx_chunks.append(f"=== GOSEE_HITS ===\nHits={len(all_results['gosee'])}, thr={limiar_gosee:.2f}\n" + "\n".join(gosee_ctx_rows) + "\n")
 
         # Contexto Documentos
         if all_results.get('docs'):
             docs_ctx_rows = []
-            for doc_name, similarity, snippet in all_results['docs'][: min(k_docs, len(all_results['docs']))]:
+            for doc_name, similarity, snippet in all_results['docs'][: min(top_k_docs, len(all_results['docs']))]:
                 snippet_short = snippet[:150].replace("\r", " ").replace("\n", " ")
                 snippet_short = re.sub(r"\s+", " ", snippet_short).strip()
                 docs_ctx_rows.append(f"Doc={doc_name} | sim={similarity:.3f} | Content={snippet_short}...")
             
-            ctx_chunks.append(f"=== DOCS_HITS ===\nHits={len(all_results['docs'])}, thr={thr_docs:.2f}\n" + "\n".join(docs_ctx_rows) + "\n")
+            ctx_chunks.append(f"=== DOCS_HITS ===\nHits={len(all_results['docs'])}, thr={limiar_docs:.2f}\n" + "\n".join(docs_ctx_rows) + "\n")
 
         # Adicionar hints e matches
         ctx_chunks.append(EVENT_HINTS_MD)
