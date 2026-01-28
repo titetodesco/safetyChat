@@ -6,7 +6,7 @@ import numpy as np
 import streamlit as st
 import json
 
-from ..config import (
+from config import (
     SPH_PQ_PATH, SPH_NPZ_PATH,
     PROMPTS_MD_PATH, DATASETS_CONTEXT_PATH,
     WS_NPZ, WS_LBL, PREC_NPZ, PREC_LBL, CP_NPZ_MAIN, CP_NPZ_ALT, CP_LBL_PARQ, CP_LBL_JSONL
