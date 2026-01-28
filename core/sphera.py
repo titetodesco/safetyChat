@@ -9,50 +9,34 @@ import streamlit as st
 # --- adicione em core/sphera.py ---
 from core.encoding import ensure_st_encoder, encode_query  # no topo do arquivo, junto aos imports
 
-def topk_similar(
-    query_text: str,
-    df: pd.DataFrame | None,
-    E: np.ndarray | None,
-    topk: int = 20,
-    min_sim: float = 0.30,
-):
-    """
-    Retorna lista de tuplas (event_id, similarity, row) dos eventos do Sphera
-    mais similares ao texto da consulta, usando embeddings pré-calculados (E)
-    e similaridade do cosseno. E deve estar normalizado (linha = vetor).
-    """
-    # defesas básicas
+def topk_similar(query_text: str, df: pd.DataFrame | None, E: np.ndarray | None,
+                 topk: int = 20, min_sim: float = 0.30):
     if not query_text or df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return []
     if E is None or getattr(E, "size", 0) == 0:
         return []
 
-    # encoder para vetor de consulta
+    # vetor de consulta
     import os
     model_name = os.getenv("ST_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
     enc = ensure_st_encoder(model_name)
-    qv = encode_query(enc, query_text)  # (dim,)
+    qv = encode_query(enc, query_text)  # normalizado
 
-    # alinhar E ao índice do df (se índices forem inteiros correspondentes ao embedding)
-    try:
-        idx = df.index.to_numpy()
-        if np.issubdtype(idx.dtype, np.integer) and (idx.max() < E.shape[0]):
-            E_view = E[idx, :]
-        else:
-            E_view = E
-    except Exception:
-        E_view = E
+    # ALINHAMENTO POR POSIÇÃO
+    n = len(df)
+    if E.shape[0] < n:
+        n = E.shape[0]
+        df = df.iloc[:n].reset_index(drop=True)
+    E_view = E[:n, :]  # primeira n linhas
 
-    # cosseno (E já normalizado; qv também): dot product
     sims = (E_view @ qv).astype(float)
     order = np.argsort(-sims)
 
-    # escolher coluna de EventID
+    # coluna de id
     id_col = None
-    for cand in ("Event ID", "EVENT_ID", "EVENTID", "id", "ID"):
+    for cand in ("Event ID","EVENT_ID","EVENTID","id","ID"):
         if cand in df.columns:
-            id_col = cand
-            break
+            id_col = cand; break
 
     out = []
     k = max(1, int(topk))
@@ -61,7 +45,7 @@ def topk_similar(
         if s < float(min_sim):
             continue
         row = df.iloc[i]
-        evid = str(row.get(id_col, str(row.name)))
+        evid = str(row.get(id_col, str(i)))
         out.append((evid, s, row))
     return out
 
