@@ -52,10 +52,15 @@ def load_datasets_context(path: Path) -> str:
         return ""
 
 @st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False)
 def load_sphera():
     df = load_parquet_safe(SPH_PQ_PATH)
     E = load_npz_embeddings(SPH_NPZ_PATH)
+    if df is not None and not df.empty:
+        # GARANTE que as linhas do df e a matriz E se alinham por POSIÇÃO
+        df = df.reset_index(drop=True)
     return df, E
+
 
 @st.cache_data(show_spinner=False)
 def _load_npz_any(path: Path):
