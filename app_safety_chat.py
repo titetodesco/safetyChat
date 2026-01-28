@@ -16,6 +16,7 @@ Patches desta versão:
 import os
 import re
 import io
+import time
 import logging
 import warnings
 from datetime import datetime, timedelta
@@ -200,15 +201,43 @@ def _location_options_from(df_full: pd.DataFrame) -> Tuple[Optional[str], List[s
 if not SPH_PQ_PATH.exists():
     _fatal(f"Parquet do Sphera não encontrado em {SPH_PQ_PATH}")
 
+# --- SPHERA ---
 df_sph = pd.read_parquet(SPH_PQ_PATH) if SPH_PQ_PATH.exists() else pd.DataFrame()
-
-# Validação robusta do DataFrame Sphera
 if not validate_dataframe(df_sph, "Sphera", ["Description", "EVENT_DATE"]):
     df_sph = pd.DataFrame()  # Fallback para DataFrame vazio
 
 E_sph = load_npz_embeddings(SPH_NPZ_PATH)
 if E_sph is None:
     _warn("Embeddings do Sphera não encontrados - funcionalidade limitada")
+
+# --- GOSEE (NOVO: Implementação completa) ---
+GOSEE_PQ_PATH = AN_DIR / "gosee.parquet"
+df_gosee = pd.read_parquet(GOSEE_PQ_PATH) if GOSEE_PQ_PATH.exists() else pd.DataFrame()
+if not validate_dataframe(df_gosee, "GoSee", ["Observation"]):
+    df_gosee = pd.DataFrame()  # Fallback para DataFrame vazio
+    _info("GoSee não disponível - continuando sem esta fonte")
+
+# --- DOCUMENTOS (NOVO: Processamento de PDFs/DOCXs) ---
+DOCS_DIR = DATA_DIR / "docs"
+docs_index = {}  # Índice: {nome_arquivo: texto_completo}
+if DOCS_DIR.exists() and DOCS_DIR.is_dir():
+    for doc_path in DOCS_DIR.glob("*.pdf"):
+        try:
+            text = extract_pdf_text(io.BytesIO(doc_path.read_bytes()))
+            docs_index[doc_path.name] = text
+            _info(f"Documento carregado: {doc_path.name} ({len(text)} chars)")
+        except Exception as e:
+            _warn(f"Erro ao processar {doc_path.name}: {e}")
+    
+    for doc_path in DOCS_DIR.glob("*.docx"):
+        try:
+            text = extract_docx_text(io.BytesIO(doc_path.read_bytes()))
+            docs_index[doc_path.name] = text
+            _info(f"Documento carregado: {doc_path.name} ({len(text)} chars)")
+        except Exception as e:
+            _warn(f"Erro ao processar {doc_path.name}: {e}")
+else:
+    _info("Pasta de documentos não encontrada - continuando sem documentos")
 
 # coluna exibida para Location
 LOC_DISPLAY_COL = get_sphera_location_col(df_sph)
@@ -310,7 +339,9 @@ else:
 # Relatório de status dos dados carregados
 status_data = {
     "Sphera": f"{len(df_sph)} registros" if not df_sph.empty else "Não disponível",
-    "Embeddings Sphera": "OK" if E_sph is not None else "Não disponível", 
+    "Embeddings Sphera": "OK" if E_sph is not None else "Não disponível",
+    "GoSee": f"{len(df_gosee)} registros" if not df_gosee.empty else "Não disponível",
+    "Documentos PDF/DOCX": f"{len(docs_index)} arquivos" if docs_index else "Não disponível",
     "WS": "OK" if E_ws is not None and L_ws is not None else "Não disponível",
     "Precursores": "OK" if E_prec is not None and L_prec is not None else "Não disponível",
     "CP": "OK" if E_cp is not None and L_cp is not None else "Não disponível"
@@ -373,6 +404,141 @@ def encode_query(q: str) -> np.ndarray:
     return v
 
 # ========================== Filtros / Similaridade ==========================
+
+@st.cache_data(show_spinner=False)
+def gosee_similar_to_text(
+    query_text: str,
+    min_sim: float = 0.3,
+    topk: int = 20,
+    df_base: Optional[pd.DataFrame] = None,
+    substr: str = "",
+) -> List[Tuple[str, float, pd.Series]]:
+    """Busca similar no GoSee (similar ao Sphera)"""
+    if not query_text or not query_text.strip():
+        return []
+    
+    if df_base is None or df_base.empty or E_sph is None:
+        return []
+    
+    start_time = time.time()
+    
+    # Pré-filtros (se aplicável)
+    df_filtered = df_base.copy()
+    
+    # Filtro de substring na descrição
+    if substr:
+        df_filtered = df_filtered[df_filtered["Observation"].str.contains(substr, case=False, na=False)]
+    
+    if df_filtered.empty:
+        return []
+    
+    # Encode da query
+    v_query = encode_query(query_text)
+    
+    # Similaridade cosseno
+    if "Observation" in df_filtered.columns:
+        texts = df_filtered["Observation"].fillna("").tolist()
+        try:
+            # Carregar embeddings para GoSee (usar Sphera embeddings temporariamente como fallback)
+            E = E_sph[:len(df_filtered)]
+            similarities = (E @ v_query).squeeze()
+            
+            # Filtro por limiar
+            valid_mask = similarities >= min_sim
+            valid_indices = np.where(valid_mask)[0]
+            
+            if len(valid_indices) == 0:
+                return []
+            
+            # Ordenar por similaridade
+            sorted_indices = valid_indices[np.argsort(similarities[valid_indices])[::-1]]
+            
+            # Construir resultados
+            results = []
+            for i in sorted_indices[:topk]:
+                idx_in_filtered = i
+                original_idx = df_filtered.iloc[idx_in_filtered].name
+                similarity = float(similarities[i])
+                row = df_filtered.iloc[idx_in_filtered]
+                results.append((str(original_idx), similarity, row))
+            
+            duration = time.time() - start_time
+            log_performance(f"gosee_search_{len(results)}_results", duration)
+            
+            return results
+            
+        except Exception as e:
+            _warn(f"Erro na busca GoSee: {e}")
+            return []
+    
+    return []
+
+@st.cache_data(show_spinner=False)
+def docs_similar_to_text(
+    query_text: str,
+    min_sim: float = 0.3,
+    topk: int = 10,
+    docs_dict: Optional[Dict[str, str]] = None,
+) -> List[Tuple[str, float, str]]:
+    """Busca similar em documentos PDF/DOCX indexados"""
+    if not query_text or not query_text.strip() or not docs_dict:
+        return []
+    
+    start_time = time.time()
+    
+    # Se não há documentos, retorna vazio
+    if not docs_dict:
+        return []
+    
+    try:
+        # Preparar textos dos documentos
+        doc_texts = []
+        doc_names = []
+        
+        for doc_name, doc_text in docs_dict.items():
+            if doc_text and doc_text.strip():
+                doc_texts.append(doc_text[:2000])  # Limitar tamanho para performance
+                doc_names.append(doc_name)
+        
+        if not doc_texts:
+            return []
+        
+        # Encode de todos os textos dos documentos
+        doc_embeddings = encode_texts(doc_texts, batch_size=16)
+        
+        # Encode da query
+        v_query = encode_query(query_text)
+        
+        # Similaridade cosseno
+        similarities = (doc_embeddings @ v_query).squeeze()
+        
+        # Filtro por limiar
+        valid_mask = similarities >= min_sim
+        valid_indices = np.where(valid_mask)[0]
+        
+        if len(valid_indices) == 0:
+            return []
+        
+        # Ordenar por similaridade
+        sorted_indices = valid_indices[np.argsort(similarities[valid_indices])[::-1]]
+        
+        # Construir resultados
+        results = []
+        for i in sorted_indices[:topk]:
+            doc_name = doc_names[i]
+            similarity = float(similarities[i])
+            text_snippet = doc_texts[i][:500] + "..." if len(doc_texts[i]) > 500 else doc_texts[i]
+            results.append((doc_name, similarity, text_snippet))
+        
+        duration = time.time() - start_time
+        log_performance(f"docs_search_{len(results)}_results", duration)
+        
+        return results
+        
+    except Exception as e:
+        _warn(f"Erro na busca em documentos: {e}")
+        return []
+
 @st.cache_data(show_spinner=False)
 def filter_sphera(df: pd.DataFrame, locations: List[str], substr: str, years: int) -> pd.DataFrame:
     """Filtro robusto do Sphera com validação e logging"""
@@ -685,10 +851,18 @@ if st.sidebar.button("Carregar no rascunho", use_container_width=True):
     st.sidebar.success("Modelo(s) carregado(s) no rascunho.")
     st.rerun()
 
-st.sidebar.header("Recuperação – Sphera")
+st.sidebar.subheader("Recuperação – Sphera")
 k_sph   = st.sidebar.slider("Top-K Sphera", 1, 100, 20, 1)
 thr_sph = st.sidebar.slider("Limiar Sphera (cos)", 0.0, 1.0, 0.30, 0.01)
 years   = st.sidebar.slider("Últimos N anos", 1, 10, 3, 1)
+
+st.sidebar.subheader("Recuperação – GoSee")
+k_gosee   = st.sidebar.slider("Top-K GoSee", 1, 50, 10, 1)
+thr_gosee = st.sidebar.slider("Limiar GoSee (cos)", 0.0, 1.0, 0.25, 0.01)
+
+st.sidebar.subheader("Recuperação – Documentos")
+k_docs   = st.sidebar.slider("Top-K Documentos", 1, 20, 5, 1)
+thr_docs = st.sidebar.slider("Limiar Documentos (cos)", 0.0, 1.0, 0.30, 0.01)
 
 st.sidebar.subheader("Filtros avançados – Sphera")
 # NOVO: multiselect de Location
@@ -857,7 +1031,7 @@ if clear_chat:
 
 # ========================== Execução ==========================
 
-def render_hits_table(hits: List[Tuple[str, float, pd.Series]], topk_display: int):
+def render_hits_table(hits: List[Tuple[str, float, pd.Series]], topk_display: int, source_name: str = "Sphera"):
     """Renderiza tabela de resultados com validação robusta"""
     if not hits:
         return
@@ -866,22 +1040,54 @@ def render_hits_table(hits: List[Tuple[str, float, pd.Series]], topk_display: in
     for evid, s, row in hits[: min(topk_display, len(hits))]:
         # Correção: validação segura da coluna de localização
         loc_val = "N/D"
-        if LOC_DISPLAY_COL and LOC_DISPLAY_COL in row.index:
-            loc_val = str(row.get(LOC_DISPLAY_COL, 'N/D'))
-        elif 'LOCATION' in row.index:
-            loc_val = str(row.get('LOCATION', 'N/D'))
+        if source_name == "Sphera":
+            if LOC_DISPLAY_COL and LOC_DISPLAY_COL in row.index:
+                loc_val = str(row.get(LOC_DISPLAY_COL, 'N/D'))
+            elif 'LOCATION' in row.index:
+                loc_val = str(row.get('LOCATION', 'N/D'))
+        elif source_name == "GoSee":
+            loc_val = str(row.get('Area', row.get('Location', 'N/D')))
             
-        desc = str(row.get("Description", row.get("DESCRIPTION", ""))).strip()
+        if source_name == "Sphera":
+            desc = str(row.get("Description", row.get("DESCRIPTION", ""))).strip()
+        else:  # GoSee
+            desc = str(row.get("Observation", "")).strip()
+            
         # normalizar quebras de linha e artefatos _x000D_
         desc = desc.replace("\r", " ").replace("\n", " ").replace("_x000D_", " ")
         desc = re.sub(r"\s+", " ", desc).strip()
         rows.append({"Event ID": evid, "Similaridade": round(s, 3), "LOCATION": loc_val, "Description": desc})
         
     if rows:
-        st.markdown(f"**Eventos do Sphera (Top-{min(topk_display, len(hits))})**")
+        st.markdown(f"**Eventos do {source_name} (Top-{min(topk_display, len(hits))})**")
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     else:
-        st.info("Nenhum resultado válido para exibir.")
+        st.info(f"Nenhum resultado válido do {source_name} para exibir.")
+
+
+def render_docs_results(docs_hits: List[Tuple[str, float, str]], topk_display: int):
+    """Renderiza resultados de documentos"""
+    if not docs_hits:
+        return
+        
+    rows = []
+    for doc_name, similarity, snippet in docs_hits[: min(topk_display, len(docs_hits))]:
+        # Truncar snippet para exibir melhor
+        display_snippet = snippet[:300] + "..." if len(snippet) > 300 else snippet
+        display_snippet = display_snippet.replace("\r", " ").replace("\n", " ").replace("_x000D_", " ")
+        display_snippet = re.sub(r"\s+", " ", display_snippet).strip()
+        
+        rows.append({
+            "Documento": doc_name,
+            "Similaridade": round(similarity, 3),
+            "Conteúdo": display_snippet
+        })
+    
+    if rows:
+        st.markdown(f"**Documentos Relevantes (Top-{min(topk_display, len(docs_hits))})**")
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("Nenhum documento relevante encontrado.")
 
 
 def push_model(messages: List[Dict[str, str]], pergunta: str, contexto_md: str, dic_matches_md: str):
@@ -928,83 +1134,183 @@ def push_model(messages: List[Dict[str, str]], pergunta: str, contexto_md: str, 
             st.error(f"Erro de conectividade com {OLLAMA_HOST}")
 
 if go_btn:
-    blocks = []
-    if st.session_state.draft_prompt.strip():
-        blocks.append("PROMPT:\n" + st.session_state.draft_prompt.strip())
-    if (user_text or "").strip():
-        blocks.append("TEXTO:\n" + user_text.strip())
-    for i, t in enumerate(st.session_state.upld_texts or []):
-        blocks.append(f"UPLOAD[{i+1}]:\n" + t.strip())
+    # Indicador de progresso
+    with st.spinner("Processando consulta integrada..."):
+        blocks = []
+        if st.session_state.draft_prompt.strip():
+            blocks.append("PROMPT:\n" + st.session_state.draft_prompt.strip())
+        if (user_text or "").strip():
+            blocks.append("TEXTO:\n" + user_text.strip())
+        for i, t in enumerate(st.session_state.upld_texts or []):
+            blocks.append(f"UPLOAD[{i+1}]:\n" + t.strip())
 
-    hits = sphera_similar_to_text(
-        query_text=(user_text or st.session_state.draft_prompt),
-        min_sim=thr_sph, years=years, topk=k_sph,
-        df_base=df_sph, E_base=E_sph, substr=substr, locations=locations,  # <— aplica filtro de Location
-    )
+        # Busca integrada em múltiplas fontes
+        all_results = {}
+        
+        # 1. Busca Sphera
+        try:
+            with st.status("🔍 Buscando no Sphera...", expanded=False):
+                st.write("Aplicando filtros e calculando similaridades...")
+                hits_sph = sphera_similar_to_text(
+                    query_text=(user_text or st.session_state.draft_prompt),
+                    min_sim=thr_sph, years=years, topk=k_sph,
+                    df_base=df_sph, E_base=E_sph, substr=substr, locations=locations,
+                )
+                all_results['sphera'] = hits_sph
+                
+                if hits_sph:
+                    st.success(f"✅ Sphera: {len(hits_sph)} eventos encontrados")
+                    render_hits_table(hits_sph, k_sph, "Sphera")
+                else:
+                    st.info("ℹ️ Nenhum evento do Sphera atingiu o limiar/filtros atuais.")
+                    
+        except Exception as e:
+            _warn(f"Erro na busca Sphera: {e}")
+            st.error(f"❌ Erro na busca Sphera: {e}")
+            all_results['sphera'] = []
 
-    if hits:
-        render_hits_table(hits, k_sph)
-    else:
-        st.info("Nenhum evento do Sphera atingiu o limiar/filtros atuais.")
+        # 2. Busca GoSee (NOVO)
+        try:
+            with st.status("🔍 Buscando no GoSee...", expanded=False):
+                hits_gosee = gosee_similar_to_text(
+                    query_text=(user_text or st.session_state.draft_prompt),
+                    min_sim=thr_gosee, topk=k_gosee,
+                    df_base=df_gosee, substr=substr,
+                )
+                all_results['gosee'] = hits_gosee
+                
+                if hits_gosee:
+                    st.success(f"✅ GoSee: {len(hits_gosee)} observações encontradas")
+                    render_hits_table(hits_gosee, k_gosee, "GoSee")
+                else:
+                    st.info("ℹ️ Nenhuma observação do GoSee encontrada.")
+                    
+        except Exception as e:
+            _warn(f"Erro na busca GoSee: {e}")
+            st.error(f"❌ Erro na busca GoSee: {e}")
+            all_results['gosee'] = []
 
-    dict_matches = aggregate_dict_matches_over_hits(
-        hits, E_ws, L_ws, E_prec, L_prec, E_cp, L_cp,
-        thr_ws_sim=thr_ws_sim, thr_prec_sim=thr_prec_sim, thr_cp_sim=thr_cp_sim,
-        topn_ws=topn_ws, topn_prec=topn_prec, topn_cp=topn_cp,
-        agg_mode=agg_mode, per_event_thr=per_ev_thr, min_support=min_support,
-    )
+        # 3. Busca em documentos (NOVO)
+        try:
+            with st.status("🔍 Buscando em documentos...", expanded=False):
+                hits_docs = docs_similar_to_text(
+                    query_text=(user_text or st.session_state.draft_prompt),
+                    min_sim=thr_docs, topk=k_docs,
+                    docs_dict=docs_index,
+                )
+                all_results['docs'] = hits_docs
+                
+                if hits_docs:
+                    st.success(f"✅ Documentos: {len(hits_docs)} documentos relevantes")
+                    render_docs_results(hits_docs, k_docs)
+                else:
+                    st.info("ℹ️ Nenhum documento relevante encontrado.")
+                    
+        except Exception as e:
+            _warn(f"Erro na busca em documentos: {e}")
+            st.error(f"❌ Erro na busca em documentos: {e}")
+            all_results['docs'] = []
 
-    # Depuração (opcional): mostra Top-N brutos para confirmar que o espaço vetorial está ok
-    debug_preview_dicts(hits, E_ws, L_ws, E_prec, L_prec, E_cp, L_cp, topk=10)
+        # 4. Agregação de dicionários sobre resultados do Sphera
+        if all_results.get('sphera'):
+            try:
+                with st.status("📊 Agregando dicionários...", expanded=False):
+                    dict_matches = aggregate_dict_matches_over_hits(
+                        all_results['sphera'], E_ws, L_ws, E_prec, L_prec, E_cp, L_cp,
+                        thr_ws_sim=thr_ws_sim, thr_prec_sim=thr_prec_sim, thr_cp_sim=thr_cp_sim,
+                        topn_ws=topn_ws, topn_prec=topn_prec, topn_cp=topn_cp,
+                        agg_mode=agg_mode, per_event_thr=per_ev_thr, min_support=min_support,
+                    )
 
-    # Hints por evento (para ancorar as observações do modelo)
-    EVENT_HINTS_MD, _Vdesc = build_event_hints(
-        hits, E_ws, L_ws, E_prec, L_prec, E_cp, L_cp,
-        per_event_thr=per_ev_thr,
-        top_per_family=3,
-    )
+                    # Depuração (opcional): mostra Top-N brutos para confirmar que o espaço vetorial está ok
+                    debug_preview_dicts(all_results['sphera'], E_ws, L_ws, E_prec, L_prec, E_cp, L_cp, topk=10)
 
-    # Bloco estruturado com os termos encontrados para passar ao LLM
-    def _fmt_list(name, arr):
-        if not arr:
-            return f"{name}: NENHUM_TERMO_ACIMA_DO_LIMIAR\n"
-        lines = [f"{name}:"]
-        for lab, sim, sup in arr:
-            lines.append(f"- termo={lab} | sim={sim:.3f} | suporte={sup}")
-        return "\n".join(lines) + "\n"
+                    # Hints por evento (para ancorar as observações do modelo)
+                    EVENT_HINTS_MD, _Vdesc = build_event_hints(
+                        all_results['sphera'], E_ws, L_ws, E_prec, L_prec, E_cp, L_cp,
+                        per_event_thr=per_ev_thr,
+                        top_per_family=3,
+                    )
 
-    ws_list   = dict_matches.get("ws")   or []
-    prec_list = dict_matches.get("prec") or []
-    cp_list   = dict_matches.get("cp")   or []
+                    # Bloco estruturado com os termos encontrados para passar ao LLM
+                    def _fmt_list(name, arr):
+                        if not arr:
+                            return f"{name}: NENHUM_TERMO_ACIMA_DO_LIMIAR\n"
+                        lines = [f"{name}:"]
+                        for lab, sim, sup in arr:
+                            lines.append(f"- termo={lab} | sim={sim:.3f} | suporte={sup}")
+                        return "\n".join(lines) + "\n"
 
-    DIC_MATCHES_MD = (
-        "=== DIC_MATCHES ===\n"
-        + _fmt_list("WS", ws_list)
-        + _fmt_list("PRECURSORES", prec_list)
-        + _fmt_list("CP", cp_list)
-    )
+                    ws_list   = dict_matches.get("ws")   or []
+                    prec_list = dict_matches.get("prec") or []
+                    cp_list   = dict_matches.get("cp")   or []
 
-    # Contexto Sphera em texto
-    table_ctx_rows = []
-    for evid, s, row in hits[: min(k_sph, len(hits))]:
-        loc_val = (str(row.get(LOC_DISPLAY_COL, row.get('LOCATION', 'N/D'))) if 'LOC_DISPLAY_COL' in globals() and LOC_DISPLAY_COL else str(row.get('LOCATION','N/D')))
-        desc    = str(row.get("Description", row.get("DESCRIPTION", ""))).strip()
-        desc = desc.replace("\r", " ").replace("\n", " ").replace("_x000D_", " ")
-        desc = re.sub(r"\s+", " ", desc).strip()
-        table_ctx_rows.append(f"EventID={evid} | sim={s:.3f} | LOCATION={loc_val} | Description={desc}")
+                    DIC_MATCHES_MD = (
+                        "=== DIC_MATCHES ===\n"
+                        + _fmt_list("WS", ws_list)
+                        + _fmt_list("PRECURSORES", prec_list)
+                        + _fmt_list("CP", cp_list)
+                    )
+                    
+                    st.success("✅ Dicionários agregados com sucesso")
 
-    ctx_chunks = [
-        f"Sphera_hits={len(hits)}, thr_sph={thr_sph:.2f}, years={years}",
-        "\n".join(table_ctx_rows),
-        EVENT_HINTS_MD,
-    ]
+            except Exception as e:
+                _warn(f"Erro na agregação de dicionários: {e}")
+                st.error(f"❌ Erro na agregação de dicionários: {e}")
+                DIC_MATCHES_MD = "=== DIC_MATCHES ===\n[ERRO NA AGREGAÇÃO]"
+                EVENT_HINTS_MD = "=== EVENT_HINTS ===\n[ERRO NA GERAÇÃO]"
+        else:
+            DIC_MATCHES_MD = "=== DIC_MATCHES ===\n[SEM RESULTADOS DO SPHERA]"
+            EVENT_HINTS_MD = "=== EVENT_HINTS ===\n[SEM RESULTADOS DO SPHERA]"
 
-    messages = [
-        {"role": "system", "content": st.session_state.system_prompt},
-        {"role": "user", "content": "".join([b for b in blocks if b])},
-    ]
-    ctx_full = "".join([x for x in ctx_chunks if x])
-    push_model(messages, user_text, ctx_full, DIC_MATCHES_MD)
+        # 5. Contexto unificado para o modelo
+        ctx_chunks = []
+        
+        # Contexto Sphera
+        if all_results.get('sphera'):
+            table_ctx_rows = []
+            for evid, s, row in all_results['sphera'][: min(k_sph, len(all_results['sphera']))]:
+                loc_val = (str(row.get(LOC_DISPLAY_COL, row.get('LOCATION', 'N/D'))) if 'LOC_DISPLAY_COL' in globals() and LOC_DISPLAY_COL else str(row.get('LOCATION','N/D')))
+                desc    = str(row.get("Description", row.get("DESCRIPTION", ""))).strip()
+                desc = desc.replace("\r", " ").replace("\n", " ").replace("_x000D_", " ")
+                desc = re.sub(r"\s+", " ", desc).strip()
+                table_ctx_rows.append(f"EventID={evid} | sim={s:.3f} | LOCATION={loc_val} | Description={desc}")
+            
+            ctx_chunks.append(f"=== SPHERA_HITS ===\nHits={len(all_results['sphera'])}, thr={thr_sph:.2f}, years={years}\n" + "\n".join(table_ctx_rows) + "\n")
+
+        # Contexto GoSee
+        if all_results.get('gosee'):
+            gosee_ctx_rows = []
+            for evid, s, row in all_results['gosee'][: min(k_gosee, len(all_results['gosee']))]:
+                area = str(row.get('Area', row.get('Location', 'N/D')))
+                obs = str(row.get("Observation", "")).strip()[:200]  # Limitar tamanho
+                obs = obs.replace("\r", " ").replace("\n", " ").replace("_x000D_", " ")
+                obs = re.sub(r"\s+", " ", obs).strip()
+                gosee_ctx_rows.append(f"GoSeeID={evid} | sim={s:.3f} | Area={area} | Observation={obs}")
+            
+            ctx_chunks.append(f"=== GOSEE_HITS ===\nHits={len(all_results['gosee'])}, thr={thr_gosee:.2f}\n" + "\n".join(gosee_ctx_rows) + "\n")
+
+        # Contexto Documentos
+        if all_results.get('docs'):
+            docs_ctx_rows = []
+            for doc_name, similarity, snippet in all_results['docs'][: min(k_docs, len(all_results['docs']))]:
+                snippet_short = snippet[:150].replace("\r", " ").replace("\n", " ")
+                snippet_short = re.sub(r"\s+", " ", snippet_short).strip()
+                docs_ctx_rows.append(f"Doc={doc_name} | sim={similarity:.3f} | Content={snippet_short}...")
+            
+            ctx_chunks.append(f"=== DOCS_HITS ===\nHits={len(all_results['docs'])}, thr={thr_docs:.2f}\n" + "\n".join(docs_ctx_rows) + "\n")
+
+        # Adicionar hints e matches
+        ctx_chunks.append(EVENT_HINTS_MD)
+        
+        # Preparar mensagens para o modelo
+        messages = [
+            {"role": "system", "content": st.session_state.system_prompt},
+            {"role": "user", "content": "".join([b for b in blocks if b])},
+        ]
+        
+        ctx_full = "".join([x for x in ctx_chunks if x])
+        push_model(messages, user_text, ctx_full, DIC_MATCHES_MD)
 
 # ========================== Histórico ==========================
 if st.session_state.get("_just_replied"):
