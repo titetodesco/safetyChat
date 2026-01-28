@@ -11,7 +11,7 @@ from services.upload_extract import extract_any
 from services.llm_client import chat
 
 def render_main():
-    st.title("SAFETY • CHAT — ESO (Refatorado)")
+    st.title("SAFETY • CHAT ")
     if "chat" not in st.session_state:
         st.session_state.chat = []
     if "upld_texts" not in st.session_state:
