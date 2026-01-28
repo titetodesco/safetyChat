@@ -47,6 +47,8 @@ PROMPTS_MD_PATH       = DATA_DIR / "prompts" / "prompts.md"
 
 SPH_PQ_PATH  = AN_DIR / "sphera.parquet"
 SPH_NPZ_PATH = AN_DIR / "sphera_embeddings.npz"
+SPH_JOBLIB_PATH = AN_DIR / "sphera_tfidf.joblib"  # Arquivo real existente
+
 XLSX_LOCATION_PATH = XLSX_DIR / "TRATADO_safeguardOffShore.xlsx"
 
 # Configurações do Ollama (serão inicializadas no contexto Streamlit)
@@ -78,13 +80,17 @@ def initialize_ollama_config():
     
     HEADERS_JSON = {"Authorization": f"Bearer {OLLAMA_API_KEY}", "Content-Type": "application/json"} if OLLAMA_API_KEY else {"Content-Type": "application/json"}
     
-    # Configurações padrão se não configuradas
-    if not OLLAMA_HOST:
-        OLLAMA_HOST = "http://localhost:11434"  # Host padrão do Ollama
-    if not OLLAMA_MODEL:
-        OLLAMA_MODEL = "llama3.2:3b"  # Modelo padrão
+    # Só definir padrões se não estiver configurado (não assumir localhost)
+    if not OLLAMA_HOST and not os.getenv("OLLAMA_HOST"):
+        OLLAMA_HOST = ""  # Não definir localhost automaticamente
+        _info("Ollama não configurado - chat funcionará sem modelo")
+    elif not OLLAMA_HOST:
+        OLLAMA_HOST = "http://localhost:11434"  # Só usar localhost se foi configurado explicitamente
         
-    _info(f"Ollama configurado: {OLLAMA_HOST} -> {OLLAMA_MODEL}")
+    if not OLLAMA_MODEL and not os.getenv("OLLAMA_MODEL"):
+        OLLAMA_MODEL = ""  # Não definir modelo padrão automaticamente
+    
+    _info(f"Ollama configurado: {OLLAMA_HOST} -> {OLLAMA_MODEL or 'Não configurado'}")
 
 def check_ollama_availability():
     """Verifica se o Ollama está disponível"""
@@ -265,7 +271,144 @@ def ensure_st_encoder():
         _fatal(f"❌ Não foi possível carregar o encoder: {e}")
 
 @st.cache_data(show_spinner=False)
+def load_embeddings_smart(base_path: Path, name: str = "embeddings") -> Optional[np.ndarray]:
+    """
+    Carrega embeddings de múltiplos formatos: .npz, .joblib, .jsonl, .parquet
+    Suporte para diferentes formatos de vetores (TF-IDF, SentenceTransformers, etc.)
+    """
+    if not base_path.exists():
+        # Tentar formatos alternativos
+        alt_formats = [
+            base_path.parent / f"{base_path.stem}.joblib",
+            base_path.parent / f"{base_path.stem}.jsonl", 
+            base_path.parent / f"{base_path.stem}.parquet",
+            base_path.parent / f"{name}_tfidf.joblib",
+            base_path.parent / f"{name}_embeddings.npz",
+        ]
+        
+        for alt_path in alt_formats:
+            if alt_path.exists():
+                _info(f"Carregando {name} de formato alternativo: {alt_path}")
+                base_path = alt_path
+                break
+        else:
+            _warn(f"{name}: Nenhum arquivo de embeddings encontrado ({base_path} ou alternativas)")
+            return None
+    
+    try:
+        if base_path.suffix == ".npz":
+            return load_npz_embeddings(base_path)
+        elif base_path.suffix == ".joblib":
+            return load_joblib_embeddings(base_path, name)
+        elif base_path.suffix == ".jsonl":
+            return load_jsonl_embeddings(base_path, name)
+        elif base_path.suffix == ".parquet":
+            return load_parquet_embeddings(base_path, name)
+        else:
+            _warn(f"{name}: Formato não suportado: {base_path.suffix}")
+            return None
+    except Exception as e:
+        _warn(f"{name}: Erro ao carregar embeddings: {e}")
+        return None
+
+@st.cache_data(show_spinner=False)
+def load_joblib_embeddings(joblib_path: Path, name: str = "embeddings") -> Optional[np.ndarray]:
+    """Carrega embeddings do formato joblib"""
+    try:
+        import joblib
+        data = joblib.load(str(joblib_path))
+        
+        # Diferentes formatos possíveis
+        if isinstance(data, dict):
+            # Tentar diferentes chaves
+            for key in ['vectors', 'embeddings', 'features', 'tfidf_matrix', 'data']:
+                if key in data and isinstance(data[key], np.ndarray):
+                    return normalize_embeddings(data[key])
+            
+            # Se o dict inteiro for um array
+            if len(data) > 0 and isinstance(list(data.values())[0], np.ndarray):
+                return normalize_embeddings(np.array(list(data.values())))
+        elif isinstance(data, np.ndarray):
+            return normalize_embeddings(data)
+        elif hasattr(data, 'toarray'):  # Matriz esparsa
+            return normalize_embeddings(data.toarray())
+        else:
+            _warn(f"{name}: Estrutura joblib não reconhecida")
+            return None
+            
+    except Exception as e:
+        _warn(f"{name}: Erro ao carregar joblib: {e}")
+        return None
+
+@st.cache_data(show_spinner=False)
+def load_jsonl_embeddings(jsonl_path: Path, name: str = "embeddings") -> Optional[np.ndarray]:
+    """Carrega embeddings do formato jsonl"""
+    try:
+        import json
+        vectors = []
+        with open(jsonl_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    data = json.loads(line.strip())
+                    # Tentar diferentes formatos
+                    if 'vector' in data:
+                        vectors.append(data['vector'])
+                    elif 'embedding' in data:
+                        vectors.append(data['embedding'])
+                    elif 'vec' in data:
+                        vectors.append(data['vec'])
+                    elif isinstance(data, list):
+                        vectors.append(data)
+                    else:
+                        _warn(f"{name}: Formato JSONL não reconhecido: {list(data.keys())}")
+                        continue
+        
+        if vectors:
+            return normalize_embeddings(np.array(vectors))
+        else:
+            _warn(f"{name}: Nenhum vetor encontrado no JSONL")
+            return None
+            
+    except Exception as e:
+        _warn(f"{name}: Erro ao carregar JSONL: {e}")
+        return None
+
+@st.cache_data(show_spinner=False)
+def load_parquet_embeddings(parquet_path: Path, name: str = "embeddings") -> Optional[np.ndarray]:
+    """Carrega embeddings do formato parquet"""
+    try:
+        df = pd.read_parquet(parquet_path)
+        
+        # Tentar diferentes colunas
+        for col in ['vector', 'embedding', 'vec', 'features', 'data']:
+            if col in df.columns:
+                vectors = df[col].apply(lambda x: np.array(x) if isinstance(x, list) else x).values
+                if len(vectors) > 0:
+                    return normalize_embeddings(np.vstack(vectors))
+        
+        # Se não encontrou colunas específicas, tentar todas as colunas numéricas
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        if len(numeric_cols) > 0:
+            return normalize_embeddings(df[numeric_cols].values)
+        else:
+            _warn(f"{name}: Nenhuma coluna numérica encontrada no parquet")
+            return None
+            
+    except Exception as e:
+        _warn(f"{name}: Erro ao carregar parquet: {e}")
+        return None
+
+def normalize_embeddings(embeddings: np.ndarray) -> np.ndarray:
+    """Normaliza embeddings para magnitude unitária"""
+    if embeddings.size == 0:
+        return embeddings
+    
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-9
+    return (embeddings / norms).astype(np.float32)
+
+@st.cache_data(show_spinner=False)
 def load_npz_embeddings(path: Path) -> Optional[np.ndarray]:
+    """Função original para carregar .npz mantida para compatibilidade"""
     if not path.exists():
         return None
     try:
@@ -459,21 +602,24 @@ if not df_sph.empty:
 else:
     _warn("Sphera: DataFrame vazio")
 
-E_sph = load_npz_embeddings(SPH_NPZ_PATH)
+E_sph = load_embeddings_smart(SPH_NPZ_PATH, "Sphera")
 if E_sph is None:
     _warn("Embeddings do Sphera não encontrados - funcionalidade limitada")
+else:
+    _info(f"Embeddings do Sphera carregados: {E_sph.shape[0]} registros")
 
 # --- GOSEE (Implementação completa) ---
 GOSEE_PQ_PATH = AN_DIR / "gosee.parquet"
 GOSEE_NPZ_PATH = AN_DIR / "gosee_embeddings.npz"
+GOSEE_JOBLIB_PATH = AN_DIR / "gosee_tfidf.joblib"
 
 df_gosee = pd.read_parquet(GOSEE_PQ_PATH) if GOSEE_PQ_PATH.exists() else pd.DataFrame()
 if not validate_dataframe(df_gosee, "GoSee", ["Observation"]):
     df_gosee = pd.DataFrame()  # Fallback para DataFrame vazio
     _info("GoSee não disponível - continuando sem esta fonte")
 
-# Carregar embeddings específicos do GoSee (CRÍTICO: não usar embeddings do Sphera)
-E_gosee = load_npz_embeddings(GOSEE_NPZ_PATH)
+# Carregar embeddings específicos do GoSee usando sistema inteligente
+E_gosee = load_embeddings_smart(GOSEE_NPZ_PATH, "GoSee")
 if E_gosee is None:
     _warn("Embeddings do GoSee não encontrados - busca no GoSee limitada")
 else:
@@ -1098,14 +1244,42 @@ def assign_terms_per_event(
 
 # ========================== Modelo ==========================
 def ollama_chat(messages, model=None, temperature=0.2, stream=False, timeout=120):
+    """
+    Chat com Ollama com tratamento robusto de erros
+    """
     if not (OLLAMA_HOST and (model or OLLAMA_MODEL)):
         raise RuntimeError("Modelo não configurado. Defina OLLAMA_HOST e OLLAMA_MODEL.")
-    import requests
-    r = requests.post(f"{OLLAMA_HOST}/api/chat", headers=HEADERS_JSON, json={
-        "model": model or OLLAMA_MODEL, "messages": messages, "temperature": float(temperature), "stream": bool(stream)
-    }, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
+    
+    try:
+        import requests
+        url = f"{OLLAMA_HOST}/api/chat"
+        payload = {
+            "model": model or OLLAMA_MODEL, 
+            "messages": messages, 
+            "temperature": float(temperature), 
+            "stream": bool(stream)
+        }
+        
+        _info(f"Tentando conectar ao Ollama: {OLLAMA_HOST}")
+        r = requests.post(url, headers=HEADERS_JSON, json=payload, timeout=timeout)
+        
+        if r.status_code == 200:
+            return r.json()
+        elif r.status_code == 404:
+            raise RuntimeError(f"Modelo '{model or OLLAMA_MODEL}' não encontrado no Ollama. Verifique se o modelo está instalado.")
+        elif r.status_code == 503:
+            raise RuntimeError("Ollama está sobrecarregado ou não está pronto. Tente novamente em alguns segundos.")
+        else:
+            r.raise_for_status()
+            
+    except requests.exceptions.ConnectionError as e:
+        raise RuntimeError(f"Erro de conectividade com {OLLAMA_HOST}. Verifique se o Ollama está rodando.")
+    except requests.exceptions.Timeout:
+        raise RuntimeError(f"Timeout ao conectar com {OLLAMA_HOST}. O serviço pode estar sobrecarregado.")
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Erro de requisição: {e}")
+    except Exception as e:
+        raise RuntimeError(f"Erro inesperado ao comunicar com Ollama: {e}")
 
 # ========================== Sidebar ==========================
 st.sidebar.subheader("Assistente de Prompts")
