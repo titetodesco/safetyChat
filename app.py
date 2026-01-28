@@ -16,7 +16,7 @@ from core.data_loader import load_dicts
 from services.llm_client import chat
 
 
-st.set_page_config(page_title="SAFETY • CHAT — ESO", layout="wide")
+st.set_page_config(page_title="SAFETY  CHAT ", layout="wide")
 
 go_btn, user_text, df_sph, E_sph, datasets_ctx, prompts_md, upl_texts = render_main()
 
