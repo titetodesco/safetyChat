@@ -3,13 +3,13 @@ from __future__ import annotations
 import streamlit as st
 import pandas as pd
 
-from ..config import DATASETS_CONTEXT_PATH, PROMPTS_MD_PATH
-from ..core.data_loader import load_sphera, load_prompts_md, load_datasets_context, load_dicts
-from ..core.sphera import filter_sphera, get_sphera_location_col, topk_similar
-from ..core.dictionaries import aggregate_dict_matches_over_hits
-from ..core.context_builder import hits_dataframe, build_dic_matches_md, build_sphera_context_md
-from ..services.upload_extract import extract_any
-from ..services.llm_client import chat
+from config import DATASETS_CONTEXT_PATH, PROMPTS_MD_PATH
+from core.data_loader import load_sphera, load_prompts_md, load_datasets_context, load_dicts
+from core.sphera import filter_sphera, get_sphera_location_col, topk_similar
+from core.dictionaries import aggregate_dict_matches_over_hits
+from core.context_builder import hits_dataframe, build_dic_matches_md, build_sphera_context_md
+from services.upload_extract import extract_any
+from services.llm_client import chat
 
 def render_main():
     st.title("SAFETY • CHAT — ESO (Refatorado)")
