@@ -49,10 +49,68 @@ SPH_PQ_PATH  = AN_DIR / "sphera.parquet"
 SPH_NPZ_PATH = AN_DIR / "sphera_embeddings.npz"
 XLSX_LOCATION_PATH = XLSX_DIR / "TRATADO_safeguardOffShore.xlsx"
 
-OLLAMA_HOST    = st.secrets.get("OLLAMA_HOST", os.getenv("OLLAMA_HOST", ""))
-OLLAMA_MODEL   = st.secrets.get("OLLAMA_MODEL", os.getenv("OLLAMA_MODEL", ""))
-OLLAMA_API_KEY = st.secrets.get("OLLAMA_API_KEY", os.getenv("OLLAMA_API_KEY"))
-HEADERS_JSON   = {"Authorization": f"Bearer {OLLAMA_API_KEY}", "Content-Type": "application/json"} if OLLAMA_API_KEY else {"Content-Type": "application/json"}
+# Configurações do Ollama (serão inicializadas no contexto Streamlit)
+OLLAMA_HOST = ""
+OLLAMA_MODEL = ""
+OLLAMA_API_KEY = ""
+HEADERS_JSON = {"Content-Type": "application/json"}
+
+def initialize_ollama_config():
+    """Inicializa configurações do Ollama dentro do contexto Streamlit"""
+    global OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_API_KEY, HEADERS_JSON
+    
+    try:
+        # Tentar acessar st.secrets primeiro
+        if hasattr(st, 'secrets'):
+            OLLAMA_HOST = st.secrets.get("OLLAMA_HOST", os.getenv("OLLAMA_HOST", ""))
+            OLLAMA_MODEL = st.secrets.get("OLLAMA_MODEL", os.getenv("OLLAMA_MODEL", ""))
+            OLLAMA_API_KEY = st.secrets.get("OLLAMA_API_KEY", os.getenv("OLLAMA_API_KEY"))
+        else:
+            # Fallback para variáveis de ambiente
+            OLLAMA_HOST = os.getenv("OLLAMA_HOST", "")
+            OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "")
+            OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
+    except Exception:
+        # Fallback final para variáveis de ambiente
+        OLLAMA_HOST = os.getenv("OLLAMA_HOST", "")
+        OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "")
+        OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
+    
+    HEADERS_JSON = {"Authorization": f"Bearer {OLLAMA_API_KEY}", "Content-Type": "application/json"} if OLLAMA_API_KEY else {"Content-Type": "application/json"}
+
+# Sistema de cache otimizado com limites dinâmicos
+class OptimizedCache:
+    """Sistema de cache otimizado com limites inteligentes"""
+    
+    def __init__(self, max_items=MAX_CACHE_ITEMS, ttl_seconds=CACHE_TTL_SECONDS):
+        self.max_items = max_items
+        self.ttl_seconds = ttl_seconds
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._cache_items = 0
+    
+    def get_cache_stats(self):
+        """Retorna estatísticas do cache"""
+        total = self._cache_hits + self._cache_misses
+        hit_rate = (self._cache_hits / total * 100) if total > 0 else 0
+        return {
+            "hits": self._cache_hits,
+            "misses": self._cache_misses,
+            "hit_rate": round(hit_rate, 2),
+            "items": self._cache_items,
+            "max_items": self.max_items,
+            "usage_pct": round((self._cache_items / self.max_items) * 100, 2)
+        }
+    
+    def check_cache_health(self):
+        """Verifica saúde do cache e gera alertas se necessário"""
+        stats = self.get_cache_stats()
+        if stats["usage_pct"] > CACHE_ALERT_THRESHOLD:
+            _warn(f"Cache utilizando {stats['usage_pct']}% da capacidade máxima ({stats['items']}/{stats['max_items']} itens)")
+        return stats
+
+# Instância global do cache otimizado
+cache_manager = OptimizedCache()
 
 ST_MODEL_NAME = os.getenv("ST_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
 
@@ -68,11 +126,6 @@ def _warn(msg: str):
     """Aviso não-fatal que permite continuação"""
     logger.warning(msg)
     st.warning(msg)
-
-def _info(msg: str):
-    """Informação para debugging"""
-    logger.info(msg)
-    # st.info(msg)  # Comentado para evitar spam na interface
 
 def _info(msg: str):
     """Informação para debugging"""
@@ -430,6 +483,9 @@ with st.expander("📊 Status dos Dados Carregados", expanded=False):
     st.dataframe(status_df, use_container_width=True, hide_index=True)
 
 # ========================== Estado ==========================
+# Inicializar configurações do Ollama
+initialize_ollama_config()
+
 if "system_prompt" not in st.session_state:
     pre = (
         "Você é o ESO-CHAT para segurança operacional (óleo e gás). "
@@ -447,45 +503,6 @@ if "st_encoder" not in st.session_state:
     st.session_state.st_encoder = ensure_st_encoder()
 if "upld_texts" not in st.session_state:
     st.session_state.upld_texts = []
-
-# Configuração de cache com TTL e controle de memória inteligente
-CACHE_TTL_SECONDS = 3600  # 1 hora
-MAX_CACHE_ITEMS = 100
-CACHE_ALERT_THRESHOLD = 80  # Alert quando cache estiver 80% cheio
-
-# Sistema de cache otimizado com limites dinâmicos
-class OptimizedCache:
-    """Sistema de cache otimizado com limites inteligentes"""
-    
-    def __init__(self, max_items=MAX_CACHE_ITEMS, ttl_seconds=CACHE_TTL_SECONDS):
-        self.max_items = max_items
-        self.ttl_seconds = ttl_seconds
-        self._cache_hits = 0
-        self._cache_misses = 0
-        self._cache_items = 0
-    
-    def get_cache_stats(self):
-        """Retorna estatísticas do cache"""
-        total = self._cache_hits + self._cache_misses
-        hit_rate = (self._cache_hits / total * 100) if total > 0 else 0
-        return {
-            "hits": self._cache_hits,
-            "misses": self._cache_misses,
-            "hit_rate": round(hit_rate, 2),
-            "items": self._cache_items,
-            "max_items": self.max_items,
-            "usage_pct": round((self._cache_items / self.max_items) * 100, 2)
-        }
-    
-    def check_cache_health(self):
-        """Verifica saúde do cache e gera alertas se necessário"""
-        stats = self.get_cache_stats()
-        if stats["usage_pct"] > CACHE_ALERT_THRESHOLD:
-            _warn(f"Cache utilizando {stats['usage_pct']}% da capacidade máxima ({stats['items']}/{stats['max_items']} itens)")
-        return stats
-
-# Instância global do cache otimizado
-cache_manager = OptimizedCache()
 
 def clear_stale_cache():
     """Limpa cache antigo para evitar problemas de memória"""
