@@ -83,7 +83,7 @@ def filter_sphera(df: pd.DataFrame | None, locations: List[str], substr: str, ye
         return df
     out = df.copy()
 
-    # janela temporal (se existir a coluna)
+    # Janela temporal: só se a coluna existir de verdade
     if years and "EVENT_DATE" in out.columns:
         try:
             out["EVENT_DATE"] = pd.to_datetime(out["EVENT_DATE"], errors="coerce")
@@ -92,14 +92,19 @@ def filter_sphera(df: pd.DataFrame | None, locations: List[str], substr: str, ye
         except Exception:
             pass
 
-    # filtro de location
+    # Location: só filtra se o usuário escolheu algo + coluna disponível
     loc_col = get_sphera_location_col(out)
     if locations and loc_col:
         out = out[out[loc_col].astype(str).isin(set(locations))]
 
-    # filtro substring (case-insensitive) em Description, se existir
+    # Substring: só se Description existir
     if substr and "Description" in out.columns:
         pat = re.escape(substr)
         out = out[out["Description"].astype(str).str.contains(pat, case=False, na=False, regex=True)]
 
+    # Evitar retornar vazio sem o usuário perceber
+    if out.empty:
+        return df  # fallback: devolve base original para não zerar o RAG
+
     return out
+
