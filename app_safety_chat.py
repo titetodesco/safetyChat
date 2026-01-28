@@ -710,11 +710,30 @@ if not df_sph.empty:
 else:
     _warn("Sphera: DataFrame vazio")
 
-E_sph = load_embeddings_any_format(SPH_NPZ_PATH)
+E_sph = None
+sphera_embeddings_path = AN_DIR / "sphera_embeddings.npz"
+sphera_joblib_path = AN_DIR / "sphera_tfidf.joblib"
+
+if sphera_embeddings_path.exists():
+    E_sph = load_npz_embeddings(sphera_embeddings_path)
+elif sphera_joblib_path.exists():
+    try:
+        import joblib
+        E_sph = joblib.load(sphera_joblib_path)
+        if E_sph is not None:
+            # Normalizar embeddings se necessário
+            if len(E_sph.shape) == 2:
+                n = np.linalg.norm(E_sph, axis=1, keepdims=True) + 1e-9
+                E_sph = (E_sph / n).astype(np.float32)
+        _info(f"Embeddings do Sphera carregados (joblib): {E_sph.shape[0]} registros" if E_sph is not None else "Erro ao carregar embeddings do Sphera")
+    except Exception as e:
+        _warn(f"Erro ao carregar embeddings Sphera do joblib: {e}")
+        E_sph = None
+else:
+    _warn("Arquivo de embeddings do Sphera não encontrado (.npz ou .joblib)")
+
 if E_sph is None:
     _warn("Embeddings do Sphera não encontrados - funcionalidade limitada")
-else:
-    _info(f"Embeddings do Sphera carregados: {E_sph.shape[0]} registros")
 
 # --- GOSEE (Implementação completa) ---
 GOSEE_PQ_PATH = AN_DIR / "gosee.parquet"
@@ -726,11 +745,30 @@ if not validate_dataframe(df_gosee, "GoSee", ["Observation"]):
     _info("GoSee não disponível - continuando sem esta fonte")
 
 # Carregar embeddings específicos do GoSee usando sistema inteligente
-E_gosee = load_embeddings_any_format(GOSEE_NPZ_PATH)
+E_gosee = None
+gosee_embeddings_path = AN_DIR / "gosee_embeddings.npz"
+gosee_joblib_path = AN_DIR / "gosee_tfidf.joblib"
+
+if gosee_embeddings_path.exists():
+    E_gosee = load_npz_embeddings(gosee_embeddings_path)
+elif gosee_joblib_path.exists():
+    try:
+        import joblib
+        E_gosee = joblib.load(gosee_joblib_path)
+        if E_gosee is not None:
+            # Normalizar embeddings se necessário
+            if len(E_gosee.shape) == 2:
+                n = np.linalg.norm(E_gosee, axis=1, keepdims=True) + 1e-9
+                E_gosee = (E_gosee / n).astype(np.float32)
+        _info(f"Embeddings do GoSee carregados (joblib): {E_gosee.shape[0]} observações" if E_gosee is not None else "Erro ao carregar embeddings do GoSee")
+    except Exception as e:
+        _warn(f"Erro ao carregar embeddings GoSee do joblib: {e}")
+        E_gosee = None
+else:
+    _warn("Arquivo de embeddings do GoSee não encontrado (.npz ou .joblib)")
+
 if E_gosee is None:
     _warn("Embeddings do GoSee não encontrados - busca no GoSee limitada")
-else:
-    _info(f"Embeddings do GoSee carregados: {E_gosee.shape[0]} observações")
 
 # --- DOCUMENTOS (NOVO: Processamento de PDFs/DOCXs) ---
 DOCS_DIR = DATA_DIR / "docs"
@@ -1354,39 +1392,55 @@ def ollama_chat(messages, model=None, temperature=0.2, stream=False, timeout=120
     """
     Chat com Ollama com tratamento robusto de erros
     """
-    if not (OLLAMA_HOST and (model or OLLAMA_MODEL)):
-        raise RuntimeError("Modelo não configurado. Defina OLLAMA_HOST e OLLAMA_MODEL.")
+    # Verificação de configuração mais flexível
+    current_host = OLLAMA_HOST or "http://localhost:11434"
+    current_model = model or OLLAMA_MODEL or "llama3.2:3b"
+    
+    if not current_host:
+        _warn("Host do Ollama não configurado")
+        return {"message": {"content": "Chat não disponível: Ollama não configurado. Configure OLLAMA_HOST para usar o chat."}}
+    
+    if not current_model:
+        _warn("Modelo do Ollama não configurado")
+        return {"message": {"content": "Chat não disponível: Modelo Ollama não configurado. Configure OLLAMA_MODEL para usar o chat."}}
     
     try:
         import requests
-        url = f"{OLLAMA_HOST}/api/chat"
+        url = f"{current_host}/api/chat"
         payload = {
-            "model": model or OLLAMA_MODEL, 
+            "model": current_model, 
             "messages": messages, 
             "temperature": float(temperature), 
             "stream": bool(stream)
         }
         
-        _info(f"Tentando conectar ao Ollama: {OLLAMA_HOST}")
+        _info(f"Tentando conectar ao Ollama: {current_host}")
         r = requests.post(url, headers=HEADERS_JSON, json=payload, timeout=timeout)
         
         if r.status_code == 200:
             return r.json()
         elif r.status_code == 404:
-            raise RuntimeError(f"Modelo '{model or OLLAMA_MODEL}' não encontrado no Ollama. Verifique se o modelo está instalado.")
+            _warn(f"Modelo '{current_model}' não encontrado no Ollama")
+            return {"message": {"content": f"Chat não disponível: Modelo '{current_model}' não encontrado no Ollama. Verifique se o modelo está instalado."}}
         elif r.status_code == 503:
-            raise RuntimeError("Ollama está sobrecarregado ou não está pronto. Tente novamente em alguns segundos.")
+            _warn("Ollama está sobrecarregado ou não está pronto")
+            return {"message": {"content": "Chat temporariamente indisponível: Ollama sobrecarregado. Tente novamente em alguns segundos."}}
         else:
-            r.raise_for_status()
+            _warn(f"Erro HTTP {r.status_code}: {r.text}")
+            return {"message": {"content": f"Chat não disponível: Erro HTTP {r.status_code}. Verifique a configuração do Ollama."}}
             
     except requests.exceptions.ConnectionError as e:
-        raise RuntimeError(f"Erro de conectividade com {OLLAMA_HOST}. Verifique se o Ollama está rodando.")
+        _warn(f"Erro de conectividade com {current_host}: {e}")
+        return {"message": {"content": f"Chat não disponível: Não foi possível conectar ao Ollama ({current_host}). Verifique se o serviço está rodando."}}
     except requests.exceptions.Timeout:
-        raise RuntimeError(f"Timeout ao conectar com {OLLAMA_HOST}. O serviço pode estar sobrecarregado.")
+        _warn(f"Timeout ao conectar com {current_host}")
+        return {"message": {"content": f"Chat não disponível: Timeout ao conectar com {current_host}. O serviço pode estar sobrecarregado."}}
     except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"Erro de requisição: {e}")
+        _warn(f"Erro de requisição: {e}")
+        return {"message": {"content": f"Chat não disponível: Erro de requisição. Verifique a configuração do Ollama."}}
     except Exception as e:
-        raise RuntimeError(f"Erro inesperado ao comunicar com Ollama: {e}")
+        _warn(f"Erro inesperado ao comunicar com Ollama: {e}")
+        return {"message": {"content": f"Chat não disponível: Erro inesperado. Configure corretamente OLLAMA_HOST e OLLAMA_MODEL."}}
 
 # ========================== Sidebar ==========================
 st.sidebar.subheader("Assistente de Prompts")
