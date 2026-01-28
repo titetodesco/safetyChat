@@ -46,8 +46,7 @@ DATASETS_CONTEXT_PATH = DATA_DIR / "datasets_context.md"
 PROMPTS_MD_PATH       = DATA_DIR / "prompts" / "prompts.md"
 
 SPH_PQ_PATH  = AN_DIR / "sphera.parquet"
-SPH_NPZ_PATH = AN_DIR / "sphera_embeddings.npz"
-SPH_JOBLIB_PATH = AN_DIR / "sphera_tfidf.joblib"  # Arquivo real existente
+SPH_NPZ_PATH = AN_DIR / "sphera_tfidf.joblib"  # Arquivo real dos embeddings Sphera
 
 XLSX_LOCATION_PATH = XLSX_DIR / "TRATADO_safeguardOffShore.xlsx"
 
@@ -218,20 +217,45 @@ def show_configuration_alerts():
             "GoSee": f"{len(df_gosee):,} observações" if not df_gosee.empty else "❌ Não disponível",
             "Documentos": f"{len(docs_index)} arquivos" if docs_index else "❌ Não disponível",
             "Embeddings Sphera": "✅ Carregados" if E_sph is not None else "❌ Não disponível",
-            "Embeddings GoSee": "✅ Carregados" if E_gosee is not None else "⚠️ Não encontrado",
+            "Embeddings GoSee": "✅ Carregados" if E_gosee is not None else "❌ Não disponível",
             "WS (Weak Signals)": "✅ Disponível" if E_ws is not None else "❌ Não disponível",
             "Precursores": "✅ Disponível" if E_prec is not None else "❌ Não disponível",
             "CP (Performance)": "✅ Disponível" if E_cp is not None else "❌ Não disponível",
-            "Ollama": f"✅ Configurado ({OLLAMA_MODEL})" if OLLAMA_HOST and OLLAMA_MODEL else "⚠️ Não configurado",
         }
         
-        for item, status in status_data.items():
-            if "✅" in status:
-                st.success(f"**{item}:** {status}")
-            elif "⚠️" in status:
-                st.warning(f"**{item}:** {status}")
+        # Status inteligente do Ollama
+        ollama_status = ""
+        if OLLAMA_HOST and OLLAMA_MODEL:
+            # Verificar se Ollama está disponível
+            if check_ollama_availability():
+                ollama_status = f"✅ Conectado ({OLLAMA_MODEL})"
             else:
-                st.error(f"**{item}:** {status}")
+                ollama_status = f"⚠️ Configurado mas não conectado ({OLLAMA_MODEL})"
+                ollama_status += "\n💡 Rode `ollama serve` ou configure uma API"
+        else:
+            ollama_status = "❌ Não configurado"
+        
+        status_data["Ollama"] = ollama_status
+        
+        for item, status in status_data.items():
+            if item == "Ollama":
+                # Status especial para Ollama com múltiplas linhas
+                if "✅" in status:
+                    st.success(f"**{item}:**")
+                    st.success(status.replace("✅ ", ""))
+                elif "⚠️" in status:
+                    st.warning(f"**{item}:**")
+                    st.warning(status.replace("⚠️ ", ""))
+                else:
+                    st.error(f"**{item}:**")
+                    st.error(status.replace("❌ ", ""))
+            else:
+                if "✅" in status:
+                    st.success(f"**{item}:** {status}")
+                elif "⚠️" in status:
+                    st.warning(f"**{item}:** {status}")
+                else:
+                    st.error(f"**{item}:** {status}")
 
 def validate_embeddings_labels(embeddings: Optional[np.ndarray], labels: Optional[pd.DataFrame], name: str) -> bool:
     """Valida se embeddings e labels estão alinhados"""
@@ -433,6 +457,90 @@ def load_npz_embeddings(path: Path) -> Optional[np.ndarray]:
         return None
 
 @st.cache_data(show_spinner=False)
+def load_embeddings_any_format(path: Path) -> Optional[np.ndarray]:
+    """
+    Carrega embeddings de qualquer formato suportado: .npz, .joblib, .jsonl, .parquet
+    """
+    if not path.exists():
+        return None
+    
+    try:
+        # Tentar diferentes formatos baseado na extensão
+        if path.suffix.lower() == '.npz':
+            return load_npz_embeddings(path)
+        
+        elif path.suffix.lower() == '.joblib':
+            try:
+                import joblib
+                data = joblib.load(str(path))
+                # Verificar se é numpy array
+                if isinstance(data, np.ndarray):
+                    # Normalizar embeddings se necessário
+                    if data.ndim == 2:
+                        norms = np.linalg.norm(data, axis=1, keepdims=True) + 1e-9
+                        return (data / norms).astype(np.float32)
+                    return data.astype(np.float32)
+                elif isinstance(data, dict) and 'embeddings' in data:
+                    E = np.array(data['embeddings'])
+                    if E.ndim == 2:
+                        norms = np.linalg.norm(E, axis=1, keepdims=True) + 1e-9
+                        return (E / norms).astype(np.float32)
+                else:
+                    _warn(f"Formato de dados desconhecido em {path}: {type(data)}")
+                    return None
+            except Exception as e:
+                _warn(f"Erro ao carregar joblib {path}: {e}")
+                return None
+        
+        elif path.suffix.lower() == '.jsonl':
+            try:
+                import json
+                embeddings = []
+                with open(path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        if line.strip():
+                            data = json.loads(line)
+                            if 'embedding' in data:
+                                embeddings.append(data['embedding'])
+                            elif 'embeddings' in data:
+                                embeddings.extend(data['embeddings'])
+                
+                if embeddings:
+                    E = np.array(embeddings)
+                    if E.ndim == 2:
+                        norms = np.linalg.norm(E, axis=1, keepdims=True) + 1e-9
+                        return (E / norms).astype(np.float32)
+                return None
+            except Exception as e:
+                _warn(f"Erro ao carregar jsonl {path}: {e}")
+                return None
+        
+        elif path.suffix.lower() == '.parquet':
+            try:
+                df = pd.read_parquet(path)
+                # Tentar diferentes colunas comuns para embeddings
+                embedding_cols = ['embedding', 'embeddings', 'vector', 'vectors', 'E']
+                for col in embedding_cols:
+                    if col in df.columns:
+                        E = np.array(df[col].tolist())
+                        if E.ndim == 2:
+                            norms = np.linalg.norm(E, axis=1, keepdims=True) + 1e-9
+                            return (E / norms).astype(np.float32)
+                _warn(f"Nenhuma coluna de embedding encontrada em {path}")
+                return None
+            except Exception as e:
+                _warn(f"Erro ao carregar parquet {path}: {e}")
+                return None
+        
+        else:
+            _warn(f"Formato de arquivo não suportado: {path.suffix}")
+            return None
+            
+    except Exception as e:
+        _warn(f"Erro geral ao carregar {path}: {e}")
+        return None
+
+@st.cache_data(show_spinner=False)
 def load_prompts_md(md_path: Path) -> Dict[str, List[Dict[str, str]]]:
     if not md_path.exists():
         return {"Texto": [], "Upload": []}
@@ -602,7 +710,7 @@ if not df_sph.empty:
 else:
     _warn("Sphera: DataFrame vazio")
 
-E_sph = load_embeddings_smart(SPH_NPZ_PATH, "Sphera")
+E_sph = load_embeddings_any_format(SPH_NPZ_PATH)
 if E_sph is None:
     _warn("Embeddings do Sphera não encontrados - funcionalidade limitada")
 else:
@@ -610,8 +718,7 @@ else:
 
 # --- GOSEE (Implementação completa) ---
 GOSEE_PQ_PATH = AN_DIR / "gosee.parquet"
-GOSEE_NPZ_PATH = AN_DIR / "gosee_embeddings.npz"
-GOSEE_JOBLIB_PATH = AN_DIR / "gosee_tfidf.joblib"
+GOSEE_NPZ_PATH = AN_DIR / "gosee_tfidf.joblib"  # Arquivo real dos embeddings GoSee
 
 df_gosee = pd.read_parquet(GOSEE_PQ_PATH) if GOSEE_PQ_PATH.exists() else pd.DataFrame()
 if not validate_dataframe(df_gosee, "GoSee", ["Observation"]):
@@ -619,7 +726,7 @@ if not validate_dataframe(df_gosee, "GoSee", ["Observation"]):
     _info("GoSee não disponível - continuando sem esta fonte")
 
 # Carregar embeddings específicos do GoSee usando sistema inteligente
-E_gosee = load_embeddings_smart(GOSEE_NPZ_PATH, "GoSee")
+E_gosee = load_embeddings_any_format(GOSEE_NPZ_PATH)
 if E_gosee is None:
     _warn("Embeddings do GoSee não encontrados - busca no GoSee limitada")
 else:
@@ -1523,15 +1630,25 @@ def push_model(messages: List[Dict[str, str]], pergunta: str, contexto_md: str, 
     except Exception as e:
         _warn(f"Erro ao consultar modelo Ollama: {e}")
         st.error(f"Falha ao consultar modelo: {e}")
-        # Tenta operação local como fallback se disponível
-        st.info("Verificando configuração do modelo Ollama...")
         
-        if not OLLAMA_HOST:
-            st.error("OLLAMA_HOST não configurado. Configure as variáveis de ambiente.")
-        elif not OLLAMA_MODEL:
-            st.error("OLLAMA_MODEL não configurado. Configure as variáveis de ambiente.")
+        # Verificar se é um problema de conectividade
+        if "Connection refused" in str(e) or "NewConnectionError" in str(e):
+            st.error("🔌 **Ollama não está rodando localmente.**")
+            st.info("💡 **Para usar o chat, configure o Ollama ou use uma API externa.**")
+            st.info("**Opções:**")
+            st.info("1. **Local**: Instale e rode Ollama (`ollama serve`)")
+            st.info("2. **Cloud**: Configure OLLAMA_HOST para uma API externa")
+            st.info("3. **Alternativa**: Use o chat sem LLMs (busca apenas)")
+        elif "Modelo não configurado" in str(e):
+            st.error("⚙️ **Configuração do Ollama incompleta.**")
+            st.info("Configure as variáveis de ambiente:")
+            st.info("- `OLLAMA_HOST`: URL do servidor Ollama")
+            st.info("- `OLLAMA_MODEL`: Nome do modelo (ex: llama3.2:3b)")
         else:
-            st.error(f"Erro de conectividade com {OLLAMA_HOST}")
+            st.error(f"❌ **Erro do Ollama:** {e}")
+        
+        # Usuário pode usar a aplicação sem LLM
+        st.info("💡 **A aplicação funciona sem LLM para busca semântica.**")
 
 if go_btn:
     # Indicador de progresso
