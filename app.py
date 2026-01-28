@@ -12,9 +12,8 @@ from core.sphera import filter_sphera, get_sphera_location_col, topk_similar
 from core.dictionaries import aggregate_dict_matches_over_hits
 from core.context_builder import hits_dataframe, build_dic_matches_md, build_sphera_context_md
 from core.data_loader import load_dicts
-
 from services.llm_client import chat
-
+from ui.tables import show_debug_raw  # <- import absoluto (evita erro de import)
 
 st.set_page_config(page_title="SAFETY  CHAT ", layout="wide")
 
@@ -23,7 +22,15 @@ go_btn, user_text, df_sph, E_sph, datasets_ctx, prompts_md, upl_texts = render_m
 # Sidebar (after main returns components)
 sel_text, sel_upl, load_to_draft = render_prompts_selector(prompts_bank=prompts_md)
 if load_to_draft:
-    st.session_state.draft_prompt = (st.session_state.draft_prompt + "\n" + sel_text + "\n" + sel_upl).strip()
+    # Concatenação segura (evita TypeError com None)
+    base = (st.session_state.get("draft_prompt") or "").strip()
+    parts = [base]
+    if sel_text:
+        parts.append(str(sel_text).strip())
+    if sel_upl:
+        parts.append(str(sel_upl).strip())
+    st.session_state["draft_prompt"] = "\n".join(p for p in parts if p).strip()
+    st.rerun()
 
 k_sph, thr_sph, years = render_retrieval_controls()
 locations, substr, loc_col, loc_opts = render_advanced_filters(df_sph)
@@ -38,7 +45,8 @@ if clear_chat_btn:
 if go_btn:
     # 1) Retrieve Sphera hits
     df_base = filter_sphera(df_sph, locations, substr, years)
-    hits = topk_similar(user_text or st.session_state.draft_prompt, df_base, E_sph, k_sph, thr_sph)
+    user_input = (user_text or st.session_state.get("draft_prompt") or "").strip()
+    hits = topk_similar(user_input, df_base, E_sph, k_sph, thr_sph)
     loc_col = get_sphera_location_col(df_sph)
 
     # 2) Aggregate dictionaries over hits
@@ -56,7 +64,6 @@ if go_btn:
     st.dataframe(df_hits, use_container_width=True, hide_index=True)
 
     # 4) Debug expander
-    from .ui.tables import show_debug_raw
     show_debug_raw(debug_raw)
 
     # 5) Compose context for LLM
@@ -68,21 +75,21 @@ if go_btn:
     ctx_full = "\n".join([c for c in ctx_lines if c])
 
     messages = [
-        {"role":"system", "content":"Você é o SAFETY • CHAT. Baseie-se no contexto fornecido e nas regras da organização para ESO."},
-        {"role":"user", "content": (st.session_state.draft_prompt or user_text or "").strip()},
-        {"role":"user", "content": "DADOS DE APOIO (não responda aqui):\n" + ctx_full},
+        {"role": "system", "content": "Você é o SAFETY • CHAT. Baseie-se no contexto fornecido e nas regras da organização para ESO."},
+        {"role": "user", "content": user_input},
+        {"role": "user", "content": "DADOS DE APOIO (não responda aqui):\n" + ctx_full},
     ]
 
     try:
         res = chat(messages, stream=False)
-        content = res.get("message",{}).get("content","(sem conteúdo)")
+        content = res.get("message", {}).get("content", "(sem conteúdo)")
     except Exception as e:
         content = f"Falha ao consultar o modelo: {e}"
 
     with st.chat_message("assistant"):
         st.markdown(content)
 
-    st.session_state.chat.append({"role":"assistant","content":content})
+    st.session_state.chat.append({"role": "assistant", "content": content})
 
 # History (last 10)
 if st.session_state.get("chat"):
@@ -90,4 +97,4 @@ if st.session_state.get("chat"):
     st.subheader("Histórico")
     for m in st.session_state.chat[-10:]:
         with st.chat_message("assistant"):
-            st.markdown(m.get("content",""))
+            st.markdown(m.get("content", ""))
