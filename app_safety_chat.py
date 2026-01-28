@@ -77,6 +77,26 @@ def initialize_ollama_config():
         OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
     
     HEADERS_JSON = {"Authorization": f"Bearer {OLLAMA_API_KEY}", "Content-Type": "application/json"} if OLLAMA_API_KEY else {"Content-Type": "application/json"}
+    
+    # Configurações padrão se não configuradas
+    if not OLLAMA_HOST:
+        OLLAMA_HOST = "http://localhost:11434"  # Host padrão do Ollama
+    if not OLLAMA_MODEL:
+        OLLAMA_MODEL = "llama3.2:3b"  # Modelo padrão
+        
+    _info(f"Ollama configurado: {OLLAMA_HOST} -> {OLLAMA_MODEL}")
+
+def check_ollama_availability():
+    """Verifica se o Ollama está disponível"""
+    if not OLLAMA_HOST or not OLLAMA_MODEL:
+        return False
+    
+    try:
+        import requests
+        response = requests.get(f"{OLLAMA_HOST}/api/tags", timeout=5)
+        return response.status_code == 200
+    except Exception:
+        return False
 
 # Sistema de cache otimizado com limites dinâmicos
 class OptimizedCache:
@@ -133,23 +153,23 @@ def _info(msg: str):
     # st.info(msg)  # Comentado para evitar spam na interface
 
 # Sistema de validação e alertas de configuração
-def validate_configuration():
-    """Valida configurações e gera alertas para o usuário"""
+def validate_configuration_sidebar_params(top_k_sphera, limiar_sphera, top_k_gosee, limiar_gosee, top_k_docs, limiar_docs, anos_filtro):
+    """Valida configurações e gera alertas para o usuário (versão para parâmetros da sidebar)"""
     alerts = []
     
     # Verificar configurações problemáticas de limiar
     if limiar_sphera > 0.8:
-        alerts.append(f"⚠️ Limiar de Similaridade Sphera muito alto ({limiar_sphera}). Considere reduzir para 0.3-0.6 para obter mais resultados.")
+        alerts.append(f"⚠️ Limiar de Similaridade Sphera muito alto ({limiar_sphera:.2f}). Considere reduzir para 0.3-0.6 para obter mais resultados.")
     
     if limiar_gosee > 0.8:
-        alerts.append(f"⚠️ Limiar de Similaridade GoSee muito alto ({limiar_gosee}). Considere reduzir para 0.2-0.5 para obter mais resultados.")
+        alerts.append(f"⚠️ Limiar de Similaridade GoSee muito alto ({limiar_gosee:.2f}). Considere reduzir para 0.2-0.5 para obter mais resultados.")
     
     if limiar_docs > 0.8:
-        alerts.append(f"⚠️ Limiar de Similaridade Documentos muito alto ({limiar_docs}). Considere reduzir para 0.3-0.6 para obter mais resultados.")
+        alerts.append(f"⚠️ Limiar de Similaridade Documentos muito alto ({limiar_docs:.2f}). Considere reduzir para 0.3-0.6 para obter mais resultados.")
     
     # Verificar configurações muito permissivas
     if limiar_sphera < 0.1:
-        alerts.append(f"⚠️ Limiar de Similaridade Sphera muito baixo ({limiar_sphera}). Considere aumentar para 0.2-0.4 para melhor precisão.")
+        alerts.append(f"⚠️ Limiar de Similaridade Sphera muito baixo ({limiar_sphera:.2f}). Considere aumentar para 0.2-0.4 para melhor precisão.")
     
     # Verificar Top-K muito alto
     if top_k_sphera > 50:
@@ -158,6 +178,16 @@ def validate_configuration():
     # Verificar período muito longo
     if anos_filtro > 5:
         alerts.append(f"⚠️ Período muito longo ({anos_filtro} anos). Considere usar 1-3 anos para eventos mais recentes e relevantes.")
+    
+    return alerts
+
+def validate_configuration():
+    """Valida configurações e gera alertas para o usuário"""
+    alerts = []
+    
+    # Por enquanto, apenas alertas gerais
+    if not OLLAMA_HOST or not OLLAMA_MODEL:
+        alerts.append("⚠️ Ollama não está configurado. Configure as variáveis de ambiente para usar o chat.")
     
     return alerts
 
@@ -186,6 +216,7 @@ def show_configuration_alerts():
             "WS (Weak Signals)": "✅ Disponível" if E_ws is not None else "❌ Não disponível",
             "Precursores": "✅ Disponível" if E_prec is not None else "❌ Não disponível",
             "CP (Performance)": "✅ Disponível" if E_cp is not None else "❌ Não disponível",
+            "Ollama": f"✅ Configurado ({OLLAMA_MODEL})" if OLLAMA_HOST and OLLAMA_MODEL else "⚠️ Não configurado",
         }
         
         for item, status in status_data.items():
@@ -317,6 +348,85 @@ def _location_options_from(df_full: pd.DataFrame) -> Tuple[Optional[str], List[s
             seen[k] = v
     return col, sorted(seen.values())
 
+# ========================== Helpers (Text Extraction) ==========================
+
+def extract_pdf_text(file_like: io.BytesIO) -> str:
+    """
+    Extrai texto de PDF. Tenta PyPDF2 -> PyMuPDF (fitz) -> pdfminer.six.
+    Retorna string (pode ser vazia se o PDF for apenas imagem/scaneado).
+    """
+    # Validar header do arquivo PDF
+    header = file_like.read(4)
+    if header[:4] != b'%PDF':
+        return ""  # Não é um PDF válido
+    file_like.seek(0)
+    
+    # 1) PyPDF2
+    try:
+        import PyPDF2
+        file_like.seek(0)
+        reader = PyPDF2.PdfReader(file_like)
+        if reader.is_encrypted:
+            return ""  # PDF protegido por senha
+        parts = []
+        for page in reader.pages:
+            parts.append(page.extract_text() or "")
+        return "\n".join(parts).strip()
+    except Exception:
+        pass
+    
+    # 2) PyMuPDF
+    try:
+        import fitz  # PyMuPDF
+        file_like.seek(0)
+        doc = fitz.open(stream=file_like.read(), filetype="pdf")
+        if doc.is_encrypted:
+            return ""  # PDF protegido por senha
+        parts = [page.get_text() for page in doc]
+        return "\n".join(parts).strip()
+    except Exception:
+        pass
+    
+    # 3) pdfminer.six
+    try:
+        from pdfminer.high_level import extract_text
+        file_like.seek(0)
+        return (extract_text(file_like) or "").strip()
+    except Exception:
+        pass
+    
+    return ""
+
+def extract_docx_text(file_like: io.BytesIO) -> str:
+    """Extrai texto de um .docx (python-docx)."""
+    try:
+        from docx import Document
+        file_like.seek(0)
+        doc = Document(file_like)
+        parts = [p.text for p in doc.paragraphs if p.text]
+        for table in doc.tables:
+            for row in table.rows:
+                parts.append(" ".join(cell.text for cell in row.cells if cell.text))
+        return "\n".join(parts).strip()
+    except Exception:
+        return ""
+
+def extract_xlsx_text(file_like: io.BytesIO) -> str:
+    """Extrai texto de um .xlsx (pandas + openpyxl)."""
+    try:
+        file_like.seek(0)
+        sheets = pd.read_excel(file_like, sheet_name=None, engine="openpyxl")
+        lines = []
+        for name, df in sheets.items():
+            if df is None or df.empty:
+                continue
+            df = df.astype(str).fillna("")
+            lines.append(f"=== SHEET: {name} ===")
+            lines.extend(df.apply(lambda r: " ".join(r.values), axis=1).tolist())
+        return "\n".join(lines).strip()
+    except Exception:
+        return ""
+
 # ========================== Carregamento de dados ==========================
 
 # Validação crítica: Sphera é obrigatório
@@ -325,8 +435,29 @@ if not SPH_PQ_PATH.exists():
 
 # --- SPHERA ---
 df_sph = pd.read_parquet(SPH_PQ_PATH) if SPH_PQ_PATH.exists() else pd.DataFrame()
-if not validate_dataframe(df_sph, "Sphera", ["Description", "EVENT_DATE"]):
-    df_sph = pd.DataFrame()  # Fallback para DataFrame vazio
+
+# Validação flexível - verificar quais colunas existem
+required_cols = []
+available_cols = []
+
+# Verificar colunas essenciais
+if not df_sph.empty:
+    if "Description" in df_sph.columns:
+        available_cols.append("Description")
+    if "DESCRIPTION" in df_sph.columns:  # alternativo
+        available_cols.append("DESCRIPTION")
+    if "EVENT_DATE" in df_sph.columns:
+        available_cols.append("EVENT_DATE")
+    
+    # Usar validação flexível baseada no que está disponível
+    if not available_cols:
+        _warn("Sphera: Nenhuma coluna essencial encontrada (Description/DESCRIPTION)")
+        df_sph = pd.DataFrame()  # Fallback para DataFrame vazio
+    elif "Description" not in available_cols and "DESCRIPTION" not in available_cols:
+        _warn("Sphera: Coluna Description/DESCRIPTION não encontrada")
+        df_sph = pd.DataFrame()  # Fallback para DataFrame vazio
+else:
+    _warn("Sphera: DataFrame vazio")
 
 E_sph = load_npz_embeddings(SPH_NPZ_PATH)
 if E_sph is None:
@@ -371,9 +502,12 @@ else:
     _info("Pasta de documentos não encontrada - continuando sem documentos")
 
 # coluna exibida para Location
-LOC_DISPLAY_COL = get_sphera_location_col(df_sph)
-if not LOC_DISPLAY_COL:
-    _warn("Coluna de localização não encontrada no Sphera")
+if not df_sph.empty:
+    LOC_DISPLAY_COL = get_sphera_location_col(df_sph)
+    if not LOC_DISPLAY_COL:
+        _warn("Coluna de localização não encontrada no Sphera")
+else:
+    LOC_DISPLAY_COL = None
 
 # --- WS/Precursores ---
 WS_NPZ,   WS_LBL   = AN_DIR / "ws_embeddings_pt.npz",   AN_DIR / "ws_embeddings_pt.parquet"
@@ -1010,6 +1144,13 @@ st.sidebar.subheader("Recuperação – Documentos")
 top_k_docs   = st.sidebar.slider("Top-K Documentos", 1, 20, 5, 1, help="Número máximo de documentos a retornar")
 limiar_docs = st.sidebar.slider("Limiar de Similaridade Documentos", 0.0, 1.0, 0.30, 0.01, help="Similaridade mínima para considerar um documento relevante (0-1)")
 
+# Validar parâmetros da sidebar
+sidebar_alerts = validate_configuration_sidebar_params(top_k_sphera, limiar_sphera, top_k_gosee, limiar_gosee, top_k_docs, limiar_docs, anos_filtro)
+if sidebar_alerts:
+    with st.sidebar.expander("🔔 Alertas de Configuração", expanded=True):
+        for alert in sidebar_alerts:
+            st.warning(alert)
+
 st.sidebar.subheader("Filtros avançados – Sphera")
 # NOVO: multiselect de Location
 _loc_col_sidebar, _loc_options = _location_options_from(df_sph)
@@ -1045,7 +1186,7 @@ with uc2:
         st.session_state.chat = []
         st.rerun()
 
-# Exibir alertas de configuração e status do sistema
+# Status do sistema (sem alertas duplicados)
 show_configuration_alerts()
 
 # ========================== UI central ==========================
@@ -1063,83 +1204,6 @@ uploaded = st.file_uploader(
     "Anexar arquivo (opcional)",
     type=["txt", "md", "csv", "pdf", "docx", "xlsx"]
 )  # upload não dispara
-
-def extract_pdf_text(file_like: io.BytesIO) -> str:
-    """
-    Extrai texto de PDF. Tenta PyPDF2 -> PyMuPDF (fitz) -> pdfminer.six.
-    Retorna string (pode ser vazia se o PDF for apenas imagem/scaneado).
-    """
-    # Validar header do arquivo PDF
-    header = file_like.read(4)
-    if header[:4] != b'%PDF':
-        return ""  # Não é um PDF válido
-    file_like.seek(0)
-    
-    # 1) PyPDF2
-    try:
-        import PyPDF2
-        file_like.seek(0)
-        reader = PyPDF2.PdfReader(file_like)
-        if reader.is_encrypted:
-            return ""  # PDF protegido por senha
-        parts = []
-        for page in reader.pages:
-            parts.append(page.extract_text() or "")
-        return "\n".join(parts).strip()
-    except Exception:
-        pass
-    
-    # 2) PyMuPDF
-    try:
-        import fitz  # PyMuPDF
-        file_like.seek(0)
-        doc = fitz.open(stream=file_like.read(), filetype="pdf")
-        if doc.is_encrypted:
-            return ""  # PDF protegido por senha
-        parts = [page.get_text() for page in doc]
-        return "\n".join(parts).strip()
-    except Exception:
-        pass
-    
-    # 3) pdfminer.six
-    try:
-        from pdfminer.high_level import extract_text
-        file_like.seek(0)
-        return (extract_text(file_like) or "").strip()
-    except Exception:
-        pass
-    
-    return ""
-
-def extract_docx_text(file_like: io.BytesIO) -> str:
-    """Extrai texto de um .docx (python-docx)."""
-    try:
-        from docx import Document
-        file_like.seek(0)
-        doc = Document(file_like)
-        parts = [p.text for p in doc.paragraphs if p.text]
-        for table in doc.tables:
-            for row in table.rows:
-                parts.append(" ".join(cell.text for cell in row.cells if cell.text))
-        return "\n".join(parts).strip()
-    except Exception:
-        return ""
-
-def extract_xlsx_text(file_like: io.BytesIO) -> str:
-    """Extrai texto de um .xlsx (pandas + openpyxl)."""
-    try:
-        file_like.seek(0)
-        sheets = pd.read_excel(file_like, sheet_name=None, engine="openpyxl")
-        lines = []
-        for name, df in sheets.items():
-            if df is None or df.empty:
-                continue
-            df = df.astype(str).fillna("")
-            lines.append(f"=== SHEET: {name} ===")
-            lines.extend(df.apply(lambda r: " ".join(r.values), axis=1).tolist())
-        return "\n".join(lines).strip()
-    except Exception:
-        return ""
 
 if uploaded is not None:
     raw = uploaded.read()
