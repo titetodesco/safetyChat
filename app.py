@@ -4,14 +4,17 @@ import pandas as pd
 
 from ui.sidebar import (
     render_prompts_selector, render_retrieval_controls, render_advanced_filters,
-    render_aggregation_controls, render_util_buttons
+    render_aggregation_controls, render_util_buttons,
 )
 from ui.main import render_main
+
 from core.sphera import filter_sphera, get_sphera_location_col, topk_similar
 from core.dictionaries import aggregate_dict_matches_over_hits
 from core.context_builder import hits_dataframe, build_dic_matches_md, build_sphera_context_md
 from core.data_loader import load_dicts
-from services.llm_client import chat
+
+from service.llm_client import chat
+
 
 st.set_page_config(page_title="SAFETY • CHAT — ESO", layout="wide")
 
