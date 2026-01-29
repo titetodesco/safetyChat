@@ -32,10 +32,12 @@ PROMPTS_MD_PATH = DATA_DIR / "prompts" / "prompts.md"
 DATASETS_CONTEXT_PATH = DOCS_DIR / "datasets_context.md"
 
 # Dictionaries (PT by default)
-WS_NPZ   = AN_DIR / "ws_embeddings_pt.npz"
-WS_LBL   = AN_DIR / "ws_embeddings_pt.parquet"
-PREC_NPZ = AN_DIR / "prec_embeddings_pt.npz"
-PREC_LBL = AN_DIR / "prec_embeddings_pt.parquet"
+WS_NPZ        = AN_DIR / "ws_embeddings_pt.npz"        # ou *_en.npz
+WS_LBL_PARQ   = AN_DIR / "ws_embeddings_pt.parquet"
+WS_LBL_JSONL  = AN_DIR / "ws_embeddings_pt.jsonl"             # se não tiver parquet
+PREC_NPZ      = AN_DIR / "prec_embeddings_pt.npz"
+PREC_LBL_PARQ = AN_DIR / "prec_embeddings_pt.parquet"
+PREC_LBL_JSONL= AN_DIR / "prec_embeddings_pt.jsonl"
 CP_NPZ_MAIN  = AN_DIR / "cp_embeddings.npz"
 CP_NPZ_ALT   = AN_DIR / "cp_vectors.npz"           # fallback
 CP_LBL_PARQ  = AN_DIR / "cp_labels.parquet"
