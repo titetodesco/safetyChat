@@ -99,11 +99,12 @@ def _load_npz_any(path: Path):
     return None
 
 @st.cache_data(show_spinner=False)
-f _load_npz_embeddings_any(path: Path | None):
-    if not path or not Path(path).exists(): return None
+def _load_npz_embeddings_any(path: Path | None):
+    if not path or not Path(path).exists():
+        return None
     try:
         z = np.load(str(path), allow_pickle=True)
-        for k in ("embeddings","E","X","vectors","vecs","arr_0"):
+        for k in ("embeddings", "E", "X", "vectors", "vecs", "arr_0"):
             if k in z:
                 E = z[k].astype(np.float32, copy=False)
                 n = np.linalg.norm(E, axis=1, keepdims=True) + 1e-9
