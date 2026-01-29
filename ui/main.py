@@ -22,9 +22,14 @@ def render_main():
     datasets_ctx = load_datasets_context(DATASETS_CONTEXT_PATH)
     prompts_md = load_prompts_md(PROMPTS_MD_PATH)
 
-    # estado base
+    # ui/main.py (dentro de render_main)
     if "draft_prompt" not in st.session_state:
         st.session_state["draft_prompt"] = ""
+
+    st.text_area("Conteúdo do prompt", key="draft_prompt", height=220, placeholder="Escreva aqui sua solicitação...")
+    user_text = st.text_area("Texto de análise (para Sphera)", key="user_text", height=160, placeholder="Descreva o cenário...")
+    upl = st.file_uploader("Anexar arquivo (opcional)", type=["pdf","docx","xlsx","txt","md","csv"], accept_multiple_files=False)
+
     
     # renderiza o text_area usando outro key
     draft_val = st.session_state.get("draft_prompt", "")
