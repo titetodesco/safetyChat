@@ -118,3 +118,50 @@ def load_dicts():
     E_cp   = _load_npz_embeddings_any(CP_NPZ_MAIN) or _load_npz_embeddings_any(CP_NPZ_ALT)
     L_cp   = _load_labels_any(CP_LBL_PARQ, CP_LBL_JSONL)
     return E_ws, L_ws, E_prec, L_prec, E_cp, L_cp
+
+try:
+    from config import (
+        GOSEE_PQ_PATH, GOSEE_NPZ_PATH,      # GoSee
+        INC_PQ_PATH, INC_NPZ_PATH, INC_JSONL_PATH,  # Investigations/History
+    )
+except Exception:
+    GOSEE_PQ_PATH = GOSEE_NPZ_PATH = None
+    INC_PQ_PATH = INC_NPZ_PATH = INC_JSONL_PATH = None
+
+
+@st.cache_data(show_spinner=False)
+def load_gosee():
+    """
+    Carrega GoSee (parquet + embeddings .npz) e alinha comprimentos.
+    Retorna: (df, E) ou (None, None) se ausente.
+    """
+    df = _load_parquet(GOSEE_PQ_PATH)
+    E  = _load_npz_embeddings_any(GOSEE_NPZ_PATH)
+    if df is None or E is None:
+        return df, E
+    df = df.reset_index(drop=True)
+    n = min(len(df), getattr(E, "shape", (0, 0))[0])
+    if len(df) != n:
+        df = df.iloc[:n].reset_index(drop=True)
+    if E.shape[0] != n:
+        E = E[:n, :]
+    return df, E
+
+@st.cache_data(show_spinner=False)
+def load_incidents():
+    """
+    Carrega Relatórios/Histórico: usa embeddings .npz e texto de parquet OU jsonl.
+    Retorna: (df, E) ou (None, None) se ausente.
+    """
+    E = _load_npz_embeddings_any(INC_NPZ_PATH)
+    # aceita parquet ou jsonl (preferência pelo parquet)
+    df = _load_parquet(INC_PQ_PATH) or _load_jsonl(INC_JSONL_PATH)
+    if df is None or E is None:
+        return df, E
+    df = df.reset_index(drop=True)
+    n = min(len(df), getattr(E, "shape", (0, 0))[0])
+    if len(df) != n:
+        df = df.iloc[:n].reset_index(drop=True)
+    if E.shape[0] != n:
+        E = E[:n, :]
+    return df, E
