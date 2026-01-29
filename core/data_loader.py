@@ -12,7 +12,7 @@ from config import (
     WS_NPZ, WS_LBL, PREC_NPZ, PREC_LBL, CP_NPZ_MAIN, CP_NPZ_ALT, CP_LBL_PARQ, CP_LBL_JSONL
 )
 
-@st.cache_data(show_spinner=False)
+''' @st.cache_data(show_spinner=False)
 def load_npz_embeddings(path: Path):
     if not path.exists():
         return None
@@ -26,11 +26,20 @@ def load_npz_embeddings(path: Path):
                     return (E / n).astype(np.float32)
     except Exception:
         return None
-    return None
+    return None 
 
 @st.cache_data(show_spinner=False)
 def load_parquet_safe(path: Path):
     if not path.exists():
+        return None
+    try:
+        return pd.read_parquet(path)
+    except Exception:
+        return None '''
+
+@st.cache_data(show_spinner=False)
+def _load_parquet(path: Path):
+    if not path or not Path(path).exists():
         return None
     try:
         return pd.read_parquet(path)
@@ -52,13 +61,20 @@ def load_datasets_context(path: Path) -> str:
         return ""
 
 @st.cache_data(show_spinner=False)
-@st.cache_data(show_spinner=False)
 def load_sphera():
-    df = load_parquet_safe(SPH_PQ_PATH)
-    E = load_npz_embeddings(SPH_NPZ_PATH)
-    if df is not None and not df.empty:
-        # GARANTE que as linhas do df e a matriz E se alinham por POSIÇÃO
-        df = df.reset_index(drop=True)
+    """Carrega Sphera + embeddings e devolve (df_sph, E_sph) alinhados por posição."""
+    df = _load_parquet(SPH_PQ_PATH)
+    E  = _load_npz_embeddings_any(SPH_NPZ_PATH)
+    if df is None or E is None:
+        return df, E
+    # reset para garantir que o .iloc (posicional) case com E
+    df = df.reset_index(drop=True)
+    # se tamanhos divergirem, recorta para o mínimo (sem reordenar)
+    n = min(len(df), E.shape[0])
+    if len(df) != n:
+        df = df.iloc[:n].reset_index(drop=True)
+    if E.shape[0] != n:
+        E = E[:n, :]
     return df, E
 
 
@@ -78,28 +94,45 @@ def _load_npz_any(path: Path):
     return None
 
 @st.cache_data(show_spinner=False)
-def _load_labels_any(parq: Path, jsonl: Path):
-    import pandas as pd, json
-    if parq.exists():
+def _load_npz_embeddings_any(path: Path):
+    if not path or not Path(path).exists():
+        return None
+    try:
+        z = np.load(str(path), allow_pickle=True)
+        for k in ("embeddings","E","X","vectors","vecs","arr_0"):
+            if k in z:
+                E = z[k].astype(np.float32, copy=False)
+                # normaliza por linha
+                n = np.linalg.norm(E, axis=1, keepdims=True) + 1e-9
+                return (E / n).astype(np.float32)
+    except Exception:
+        return None
+    return None
+
+@st.cache_data(show_spinner=False)
+def load_dicts():
+    """Carrega bancos de dicionários (WS/Precursores/CP) e devolve tupla com embeddings normalizados + labels."""
+    E_ws   = _load_npz_embeddings_any(WS_NPZ)
+    L_ws   = _load_parquet(WS_LBL)
+    E_prec = _load_npz_embeddings_any(PREC_NPZ)
+    L_prec = _load_parquet(PREC_LBL)
+    E_cp   = _load_npz_embeddings_any(CP_NPZ_MAIN) or _load_npz_embeddings_any(CP_NPZ_ALT)
+    L_cp   = _load_parquet(CP_LBL_PARQ) or _load_labels_any(CP_LBL_PARQ, CP_LBL_JSONL)
+    return (E_ws, L_ws, E_prec, L_prec, E_cp, L_cp)
+
+@st.cache_data(show_spinner=False)
+def _load_labels_any(parquet_path: Path, jsonl_path: Path):
+    import json
+    if parquet_path and parquet_path.exists():
         try:
-            df = pd.read_parquet(parq)
-            return df
+            return pd.read_parquet(parquet_path)
         except Exception:
             pass
-    if jsonl.exists():
+    if jsonl_path and jsonl_path.exists():
         try:
-            rows = [json.loads(x) for x in jsonl.read_text(encoding="utf-8").splitlines() if x.strip()]
+            rows = [json.loads(x) for x in jsonl_path.read_text(encoding="utf-8").splitlines() if x.strip()]
             return pd.DataFrame(rows)
         except Exception:
             pass
     return None
 
-@st.cache_data(show_spinner=False)
-def load_dicts():
-    E_ws   = load_npz_embeddings(WS_NPZ)
-    L_ws   = load_parquet_safe(WS_LBL)
-    E_prec = load_npz_embeddings(PREC_NPZ)
-    L_prec = load_parquet_safe(PREC_LBL)
-    E_cp   = _load_npz_any(CP_NPZ_MAIN) or _load_npz_any(CP_NPZ_ALT)
-    L_cp   = _load_labels_any(CP_LBL_PARQ, CP_LBL_JSONL)
-    return (E_ws, L_ws, E_prec, L_prec, E_cp, L_cp)
