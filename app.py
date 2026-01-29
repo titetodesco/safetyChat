@@ -36,6 +36,21 @@ hits_inc   = topk_similar(user_input, df_inc,   E_inc,   topk=k_sph, min_sim=thr
 
 go_btn, user_text, df_sph, E_sph, datasets_ctx, prompts_md, upl_texts = render_main()
 
+# 🔹 Sempre inicialize o estado ANTES dos widgets
+if "draft_prompt" not in st.session_state:
+    st.session_state["draft_prompt"] = ""
+
+# 🔹 Textarea do rascunho (dê uma key fixa)
+draft = st.text_area("Conteúdo do prompt", key="draft_prompt", height=220)
+
+# 🔹 No handler do botão "Carregar no rascunho"
+sel_text, sel_upl, load_to_draft = render_prompts_selector(prompts_bank=prompts_md)
+if load_to_draft:
+    merged = "\n".join([st.session_state.get("draft_prompt",""), sel_text or "", sel_upl or ""]).strip()
+    st.session_state["draft_prompt"] = merged
+    st.rerun()  # garante refresh do textarea com o novo valor
+
+
 # Carregar no rascunho (concatenar com segurança)
 sel_text, sel_upl, load_to_draft = render_prompts_selector(prompts_bank=prompts_md)
 if load_to_draft:
