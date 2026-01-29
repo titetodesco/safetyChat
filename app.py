@@ -19,17 +19,14 @@ st.set_page_config(page_title="SAFETY  CHAT ", layout="wide")
 
 go_btn, user_text, df_sph, E_sph, datasets_ctx, prompts_md, upl_texts = render_main()
 
-# Sidebar (after main returns components)
+# Carregar no rascunho (concatenar com segurança)
 sel_text, sel_upl, load_to_draft = render_prompts_selector(prompts_bank=prompts_md)
 if load_to_draft:
-    # Concatenação segura (evita TypeError com None)
     base = (st.session_state.get("draft_prompt") or "").strip()
     parts = [base]
-    if sel_text:
-        parts.append(str(sel_text).strip())
-    if sel_upl:
-        parts.append(str(sel_upl).strip())
-    st.session_state["draft_prompt"] = "\n".join(p for p in parts if p).strip()
+    if sel_text: parts.append(str(sel_text).strip())
+    if sel_upl:  parts.append(str(sel_upl).strip())
+    st.session_state["draft_prompt"] = "\n".join([p for p in parts if p]).strip()
     st.rerun()
 
 k_sph, thr_sph, years = render_retrieval_controls()
@@ -43,13 +40,26 @@ if clear_chat_btn:
 
 # Only run when user clicks
 if go_btn:
-    # 1) Retrieve Sphera hits
-    df_base = filter_sphera(df_sph, locations, substr, years)
     user_input = (user_text or st.session_state.get("draft_prompt") or "").strip()
-    hits = topk_similar(user_input, df_base, E_sph, k_sph, thr_sph)
-    loc_col = get_sphera_location_col(df_sph)
+    if not user_input:
+        st.warning("Escreva algo no 'Conteúdo do prompt' ou em 'Texto de análise (para Sphera)' antes de enviar.")
+        st.stop()
 
-    # 2) Aggregate dictionaries over hits
+    # 1) Recuperação Sphera
+    df_base = filter_sphera(df_sph, locations, substr, years)
+    hits = topk_similar(user_input, df_base, E_sph, k_sph, thr_sph)
+    loc_col_effective = get_sphera_location_col(df_base or df_sph)
+
+    with st.expander("🔧 Diagnóstico RAG", expanded=False):
+        st.write({
+            "len(df_sph)": 0 if df_sph is None else len(df_sph),
+            "len(df_base)": 0 if (df_base is None) else len(df_base),
+            "E_sph.shape": None if E_sph is None else tuple(E_sph.shape),
+            "hits": len(hits),
+            "k_sph": k_sph, "thr_sph": float(thr_sph),
+        })
+
+    # 2) Agregação dicionários
     E_ws, L_ws, E_prec, L_prec, E_cp, L_cp = load_dicts()
     dic_res, debug_raw = aggregate_dict_matches_over_hits(
         hits, E_ws, L_ws, E_prec, L_prec, E_cp, L_cp,
@@ -58,43 +68,36 @@ if go_btn:
         top_ws=top_ws, top_prec=top_prec, top_cp=top_cp
     )
 
-    # 3) Build UI tables
+    # 3) Tabela hits
     st.subheader(f"Eventos do Sphera (Top-{min(k_sph, len(hits))})")
-    df_hits = hits_dataframe(hits, loc_col)
+    df_hits = hits_dataframe(hits, loc_col_effective)
     st.dataframe(df_hits, use_container_width=True, hide_index=True)
 
-    # 4) Debug expander
+    # 4) Depuração
+    from ui.tables import show_debug_raw
     show_debug_raw(debug_raw)
 
-    # 5) Compose context for LLM
+    # 5) Contexto ao LLM (texto — o modelo NÃO “vê” embeddings, vê o contexto)
     ctx_lines = [
         datasets_ctx,
-        build_sphera_context_md(hits, loc_col),
+        build_sphera_context_md(hits, loc_col_effective),
         build_dic_matches_md(dic_res),
     ]
     ctx_full = "\n".join([c for c in ctx_lines if c])
 
     messages = [
-        {"role": "system", "content": "Você é o SAFETY • CHAT. Baseie-se no contexto fornecido e nas regras da organização para ESO."},
-        {"role": "user", "content": user_input},
-        {"role": "user", "content": "DADOS DE APOIO (não responda aqui):\n" + ctx_full},
+        {"role":"system", "content":"Você é o SAFETY • CHAT. Baseie-se no contexto fornecido e nas regras da organização para ESO."},
+        {"role":"user", "content": user_input},
+        {"role":"user", "content": "DADOS DE APOIO (não responda aqui):\n" + ctx_full},
     ]
 
     try:
         res = chat(messages, stream=False)
-        content = res.get("message", {}).get("content", "(sem conteúdo)")
+        content = res.get("message",{}).get("content","(sem conteúdo)")
     except Exception as e:
         content = f"Falha ao consultar o modelo: {e}"
 
     with st.chat_message("assistant"):
         st.markdown(content)
 
-    st.session_state.chat.append({"role": "assistant", "content": content})
-
-# History (last 10)
-if st.session_state.get("chat"):
-    st.divider()
-    st.subheader("Histórico")
-    for m in st.session_state.chat[-10:]:
-        with st.chat_message("assistant"):
-            st.markdown(m.get("content", ""))
+    st.session_state.chat.append({"role":"assistant","content":content})
