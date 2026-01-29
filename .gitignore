@@ -21,6 +21,8 @@ tmp/
 !data/
 !data/analytics/
 !data/analytics/*.npz
+!data/analytics/*.jsonl
+!data/analytics/*.parquet
 
 # SO / IDE
 .DS_Store
