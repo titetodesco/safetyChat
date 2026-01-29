@@ -6,11 +6,19 @@ import numpy as np
 import streamlit as st
 import json
 
-from config import (
-    SPH_PQ_PATH, SPH_NPZ_PATH,
-    PROMPTS_MD_PATH, DATASETS_CONTEXT_PATH,
-    WS_NPZ, WS_LBL, PREC_NPZ, PREC_LBL, CP_NPZ_MAIN, CP_NPZ_ALT, CP_LBL_PARQ, CP_LBL_JSONL
-)
+try:
+    from config import (
+        SPH_PQ_PATH, SPH_NPZ_PATH,
+        GOSEE_PQ_PATH, GOSEE_NPZ_PATH,
+        CP_NPZ_MAIN, CP_NPZ_ALT, CP_LBL_PARQ, CP_LBL_JSONL,
+        INC_PQ_PATH, INC_NPZ_PATH, INC_JSONL_PATH,
+        # ... (WS/PREC se você já tinha)
+    )
+except Exception:
+    SPH_PQ_PATH = SPH_NPZ_PATH = None
+    GOSEE_PQ_PATH = GOSEE_NPZ_PATH = None
+    CP_NPZ_MAIN = CP_NPZ_ALT = CP_LBL_PARQ = CP_LBL_JSONL = None
+    INC_PQ_PATH = INC_NPZ_PATH = INC_JSONL_PATH = None
 
 ''' @st.cache_data(show_spinner=False)
 def load_npz_embeddings(path: Path):
@@ -38,13 +46,10 @@ def load_parquet_safe(path: Path):
         return None '''
 
 @st.cache_data(show_spinner=False)
-def _load_parquet(path: Path):
-    if not path or not Path(path).exists():
-        return None
-    try:
-        return pd.read_parquet(path)
-    except Exception:
-        return None
+def _load_parquet(path: Path | None):
+    if not path or not Path(path).exists(): return None
+    try: return pd.read_parquet(path)
+    except Exception: return None
 
 @st.cache_data(show_spinner=False)
 def load_prompts_md(path: Path) -> str:
@@ -94,15 +99,13 @@ def _load_npz_any(path: Path):
     return None
 
 @st.cache_data(show_spinner=False)
-def _load_npz_embeddings_any(path: Path):
-    if not path or not Path(path).exists():
-        return None
+f _load_npz_embeddings_any(path: Path | None):
+    if not path or not Path(path).exists(): return None
     try:
         z = np.load(str(path), allow_pickle=True)
         for k in ("embeddings","E","X","vectors","vecs","arr_0"):
             if k in z:
                 E = z[k].astype(np.float32, copy=False)
-                # normaliza por linha
                 n = np.linalg.norm(E, axis=1, keepdims=True) + 1e-9
                 return (E / n).astype(np.float32)
     except Exception:
@@ -111,14 +114,10 @@ def _load_npz_embeddings_any(path: Path):
 
 @st.cache_data(show_spinner=False)
 def load_dicts():
-    """Carrega bancos de dicionários (WS/Precursores/CP) e devolve tupla com embeddings normalizados + labels."""
-    E_ws   = _load_npz_embeddings_any(WS_NPZ)
-    L_ws   = _load_parquet(WS_LBL)
-    E_prec = _load_npz_embeddings_any(PREC_NPZ)
-    L_prec = _load_parquet(PREC_LBL)
+    # WS/PREC (se já possui)…
     E_cp   = _load_npz_embeddings_any(CP_NPZ_MAIN) or _load_npz_embeddings_any(CP_NPZ_ALT)
-    L_cp   = _load_parquet(CP_LBL_PARQ) or _load_labels_any(CP_LBL_PARQ, CP_LBL_JSONL)
-    return (E_ws, L_ws, E_prec, L_prec, E_cp, L_cp)
+    L_cp   = _load_parquet(CP_LBL_PARQ) or _load_jsonl(CP_LBL_JSONL)
+    return (E_ws, L_ws, E_prec, L_prec, E_cp, L_cp)  # mantenha sua assinatura atual
 
 @st.cache_data(show_spinner=False)
 def _load_labels_any(parquet_path: Path, jsonl_path: Path):
@@ -152,14 +151,23 @@ def load_gosee():
 
 @st.cache_data(show_spinner=False)
 def load_incidents():
-    df = _load_parquet(INC_PQ_PATH)
-    E  = _load_npz_embeddings_any(INC_NPZ_PATH)
+    """Usa history_embeddings.npz + history_texts.jsonl (se houver)."""
+    E = _load_npz_embeddings_any(INC_NPZ_PATH)
+    df = _load_parquet(INC_PQ_PATH) or _load_jsonl(INC_JSONL_PATH)
     if df is None or E is None:
         return df, E
     df = df.reset_index(drop=True)
     n = min(len(df), E.shape[0])
-    if len(df) != n:
-        df = df.iloc[:n].reset_index(drop=True)
-    if E.shape[0] != n:
-        E = E[:n, :]
+    if len(df) != n: df = df.iloc[:n].reset_index(drop=True)
+    if E.shape[0] != n: E = E[:n, :]
     return df, E
+
+@st.cache_data(show_spinner=False)
+def _load_jsonl(path: Path | None, text_key: str | None = None):
+    if not path or not Path(path).exists(): return None
+    try:
+        rows = [json.loads(x) for x in Path(path).read_text(encoding="utf-8").splitlines() if x.strip()]
+        df = pd.DataFrame(rows)
+        return df
+    except Exception:
+        return None
