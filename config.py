@@ -13,6 +13,14 @@ DOCS_DIR = DATA_DIR / "docs"
 SPH_PQ_PATH = AN_DIR / "sphera.parquet"
 SPH_NPZ_PATH = AN_DIR / "sphera_embeddings.npz"
 
+# GoSee
+GOSEE_PQ_PATH  = AN_DIR / "gosee.parquet"            # <- ajuste se seu nome for outro
+GOSEE_NPZ_PATH = AN_DIR / "gosee_embeddings.npz"     # <- idem
+
+# Relatórios de investigação
+INC_PQ_PATH  = AN_DIR / "investigations.parquet"     # <- ajuste se seu nome for outro
+INC_NPZ_PATH = AN_DIR / "investigations_embeddings.npz"
+
 PROMPTS_MD_PATH = DATA_DIR / "prompts" / "prompts.md"
 DATASETS_CONTEXT_PATH = DOCS_DIR / "datasets_context.md"
 
