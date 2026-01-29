@@ -18,6 +18,10 @@ tmp/
 *.npz
 *.npy
 
+!data/
+!data/analytics/
+!data/analytics/*.npz
+
 # SO / IDE
 .DS_Store
 Thumbs.db
