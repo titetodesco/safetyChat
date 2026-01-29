@@ -22,7 +22,11 @@ from core.sphera import topk_similar  # já existente
 
 # Carrega as outras bases
 df_gosee, E_gosee = load_gosee()
-df_inc,   E_inc   = load_incidents()
+df_inc, E_inc = load_incidents()
+if df_inc is not None and E_inc is not None:
+    hits_inc = topk_similar(user_input, df_inc, E_inc, topk=k_sph, min_sim=thr_sph)
+    ctx_lines.append(build_investigation_context_md(hits_inc))
+
 
 st.set_page_config(page_title="SAFETY  CHAT ", layout="wide")
 
