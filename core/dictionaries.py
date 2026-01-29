@@ -3,9 +3,11 @@ from __future__ import annotations
 from typing import List, Dict, Tuple, Optional
 import numpy as np
 import pandas as pd
+from core.encoding import ensure_st_encoder, encode_texts
+import os
 
 def _labels_col(df: pd.DataFrame) -> str:
-    for c in ["label","LABEL","term","Term","descricao","description","DESC"]:
+    for c in ["label","LABEL","term","Term","descricao","description","DESC","WS","Precursor","CP"]:
         if c in df.columns:
             return c
     return df.columns[0]
@@ -14,11 +16,8 @@ def _family_name(name: str) -> str:
     return {"ws":"WS","prec":"Precursor","cp":"CP"}.get(name, name)
 
 def _aggregate(scores: np.ndarray, mode: str) -> float:
-    if scores.size == 0:
-        return 0.0
-    if mode == "mean":
-        return float(scores.mean())
-    return float(scores.max())  # default max
+    if scores.size == 0: return 0.0
+    return float(scores.mean()) if mode == "mean" else float(scores.max())
 
 def aggregate_dict_matches_over_hits(
     hits: List[Tuple[str,float,pd.Series]],
@@ -31,22 +30,17 @@ def aggregate_dict_matches_over_hits(
     thr_ws: float = 0.30, thr_prec: float = 0.30, thr_cp: float = 0.30,
     top_ws: int = 10, top_prec: int = 10, top_cp: int = 10
 ):
-    # Build a matrix V_desc from hit descriptions using SBERT (for dictionary match)
     if not hits:
-        return {}, {}
-    descs = [str(h[2].get("Description","")) for h in hits]
-    from .encoding import ensure_st_encoder, encode_texts
-    import os
+        return {"WS": [], "Precursores": [], "CP": []}, {"RAW_WS": [], "RAW_PREC": [], "RAW_CP": []}
+
+    # vetoriza descriptions dos hits (com mesmo encoder)
     enc = ensure_st_encoder(os.getenv("ST_MODEL_NAME","sentence-transformers/all-MiniLM-L6-v2"))
-    V_desc = encode_texts(enc, descs)
+    descs = [str(h[2].get("Description","")) for h in hits]
+    V_desc = encode_texts(enc, descs)  # [n_hits x dim], normalizado
 
-    results = {}
-    debug = {}
-
-    def compute_family(E_bank, L_bank, fam_key: str, thr_global: float, topN: int):
+    def family(E_bank, L_bank, thr_global, topN):
         if E_bank is None or L_bank is None or len(L_bank)==0:
             return []
-        # cosine scores term vs each description
         S = (E_bank @ V_desc.T)  # [terms x events]
         valid = []
         for i in range(S.shape[0]):
@@ -60,28 +54,24 @@ def aggregate_dict_matches_over_hits(
         valid.sort(key=lambda t: t[1], reverse=True)
         return valid[:topN]
 
-    res_ws   = compute_family(E_ws, L_ws,   "ws",   thr_ws,   top_ws)
-    res_prec = compute_family(E_prec, L_prec,"prec",thr_prec, top_prec)
-    res_cp   = compute_family(E_cp, L_cp,   "cp",   thr_cp,   top_cp)
-
-    results["WS"] = res_ws
-    results["Precursores"] = res_prec
-    results["CP"] = res_cp
-
-    # debug lists without global thresholds (top raw)
-    def debug_family(E_bank, L_bank, fam_key: str, topN: int = 20):
+    def family_raw(E_bank, L_bank, topN=20):
         out = []
         if E_bank is None or L_bank is None or len(L_bank)==0:
             return out
         S = (E_bank @ V_desc.T)
         for i in range(S.shape[0]):
             lab = str(L_bank.iloc[i].get(_labels_col(L_bank), f"TERM_{i}"))
-            score = float(S[i, :].max())
-            out.append((lab, score))
+            out.append((lab, float(S[i,:].max())))
         out.sort(key=lambda t: t[1], reverse=True)
         return out[:topN]
-    debug["RAW_WS"]   = debug_family(E_ws, L_ws, "ws")
-    debug["RAW_PREC"] = debug_family(E_prec, L_prec, "prec")
-    debug["RAW_CP"]   = debug_family(E_cp, L_cp, "cp")
 
-    return results, debug
+    res_ws   = family(E_ws, L_ws, thr_ws, top_ws)
+    res_prec = family(E_prec, L_prec, thr_prec, top_prec)
+    res_cp   = family(E_cp, L_cp, thr_cp, top_cp)
+
+    debug = {
+        "RAW_WS": family_raw(E_ws, L_ws),
+        "RAW_PREC": family_raw(E_prec, L_prec),
+        "RAW_CP": family_raw(E_cp, L_cp),
+    }
+    return {"WS": res_ws, "Precursores": res_prec, "CP": res_cp}, debug
