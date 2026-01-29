@@ -5,9 +5,8 @@ import numpy as np
 import pandas as pd
 import re
 import streamlit as st
-
-# --- adicione em core/sphera.py ---
-from core.encoding import ensure_st_encoder, encode_query  # no topo do arquivo, junto aos imports
+import os
+from core.encoding import ensure_st_encoder, encode_query
 
 def topk_similar(query_text: str, df: pd.DataFrame | None, E: np.ndarray | None,
                  topk: int = 20, min_sim: float = 0.30):
@@ -51,7 +50,6 @@ def topk_similar(query_text: str, df: pd.DataFrame | None, E: np.ndarray | None,
 
 
 def get_sphera_location_col(df: pd.DataFrame | None) -> Optional[str]:
-    # guarda contra None e contra objetos não-DataFrame
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return None
     for c in ["LOCATION", "FPSO", "Location", "FPSO/Unidade", "Unidade"]:
@@ -67,14 +65,7 @@ def location_options(df: pd.DataFrame | None) -> List[str]:
     if not col:
         return []
     vals = (
-        df[col]
-        .astype(str)
-        .fillna("")
-        .str.strip()
-        .replace({"": None})
-        .dropna()
-        .unique()
-        .tolist()
+        df[col].astype(str).fillna("").str.strip().replace({"": None}).dropna().unique().tolist()
     )
     return sorted(set(vals))
 
@@ -83,7 +74,7 @@ def filter_sphera(df: pd.DataFrame | None, locations: List[str], substr: str, ye
         return df
     out = df.copy()
 
-    # Janela temporal: só se a coluna existir de verdade
+    # janela temporal (se houver)
     if years and "EVENT_DATE" in out.columns:
         try:
             out["EVENT_DATE"] = pd.to_datetime(out["EVENT_DATE"], errors="coerce")
@@ -92,19 +83,59 @@ def filter_sphera(df: pd.DataFrame | None, locations: List[str], substr: str, ye
         except Exception:
             pass
 
-    # Location: só filtra se o usuário escolheu algo + coluna disponível
+    # location (se houver)
     loc_col = get_sphera_location_col(out)
     if locations and loc_col:
         out = out[out[loc_col].astype(str).isin(set(locations))]
 
-    # Substring: só se Description existir
+    # substring em Description (case-insensitive)
     if substr and "Description" in out.columns:
         pat = re.escape(substr)
         out = out[out["Description"].astype(str).str.contains(pat, case=False, na=False, regex=True)]
 
-    # Evitar retornar vazio sem o usuário perceber
-    if out.empty:
-        return df  # fallback: devolve base original para não zerar o RAG
+    # se ficou vazio, devolve base original (para não “matar” o RAG sem aviso)
+    return out if not out.empty else df
 
+def topk_similar(
+    query_text: str,
+    df: pd.DataFrame | None,
+    E: np.ndarray | None,
+    topk: int = 20,
+    min_sim: float = 0.30,
+) -> List[Tuple[str, float, pd.Series]]:
+    """Top-K por cosseno usando embeddings pré-calculados (normalizados)."""
+    if not query_text or df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return []
+    if E is None or getattr(E, "size", 0) == 0:
+        return []
+
+    # usa o MESMO encoder do embedding original para vetor de consulta
+    model_name = os.getenv("ST_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
+    enc = ensure_st_encoder(model_name)
+    qv = encode_query(enc, query_text)  # normalizado
+
+    # Alinhamento posicional garantido (df e E já vêm “casados” pelo load_sphera)
+    n = min(len(df), E.shape[0])
+    if n == 0:
+        return []
+    E_view = E[:n, :]
+
+    sims = (E_view @ qv).astype(float)
+    order = np.argsort(-sims)
+
+    # coluna id
+    id_col = None
+    for cand in ("Event ID","EVENT_ID","EVENTID","id","ID"):
+        if cand in df.columns:
+            id_col = cand; break
+
+    out = []
+    k = max(1, int(topk))
+    for i in order[:k]:
+        s = float(sims[i])
+        if s < float(min_sim):
+            continue
+        row = df.iloc[i]
+        evid = str(row.get(id_col, str(i)))
+        out.append((evid, s, row))
     return out
-
