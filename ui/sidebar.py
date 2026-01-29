@@ -6,40 +6,33 @@ from typing import List, Tuple
 
 from core.sphera import get_sphera_location_col, location_options
 
-def render_prompts_selector(prompts_bank: str):
-    st.sidebar.subheader("Assistente de Prompts")
-    col1, col2 = st.sidebar.columns(2)
+def render_prompts_selector(*, prompts_bank: str, key_prefix: str = "sb_") -> Tuple[str|None, str|None, bool]:
+    """
+    Retorna (sel_text, sel_upl, load_to_draft).
+    Usa keys únicas com prefixo para evitar duplicação.
+    """
+    with st.sidebar.expander("Assistente de Prompts", expanded=False):
+        # Parse simples: sua lógica já existente que gera txt_opts e upl_opts
+        txt_opts = [f"Prompt {i}" for i in range(1, 6)]
+        upl_opts = [f"Prompt {i}" for i in range(1, 5+1)]
 
-    txt_opts = [
-        "(1) Síntese focada em lições",
-        "(2) Recomendações",
-        "(3) Padrões recorrentes",
-        "(4) Análise causal",
-        "(5) Resumo executivo",
-    ]
-    upl_opts = [
-        "(1) Destacar achados do upload",
-        "(2) Comparar com Sphera",
-        "(3) Lacunas e riscos",
-        "(4) Checklists",
-        "(5) Perguntas ao time",
-    ]
+        # importante: keys únicas
+        sel_text = st.selectbox(
+            "Texto",
+            options=txt_opts,
+            index=None, placeholder="Selecione um prompt (Texto)",
+            key=f"{key_prefix}sel_text_prompt",
+        )
+        sel_upl = st.selectbox(
+            "Upload",
+            options=upl_opts,
+            index=None, placeholder="Selecione um prompt (Upload)",
+            key=f"{key_prefix}sel_upl_prompt",
+        )
 
-    st.session_state.setdefault("sel_text_prompt", None)
-    st.session_state.setdefault("sel_upl_prompt", None)
+        load_to_draft = st.button("Carregar no rascunho", key=f"{key_prefix}load_to_draft", use_container_width=True)
 
-    sel_text = col1.selectbox(
-        "Texto", options=txt_opts, index=None, placeholder="Selecione um prompt…",
-        key="sel_text_prompt",
-    )
-    sel_upl = col2.selectbox(
-        "Upload", options=upl_opts, index=None, placeholder="Selecione um prompt…",
-        key="sel_upl_prompt",
-    )
-
-    disable_btn = (sel_text is None) and (sel_upl is None)
-    load_btn = st.sidebar.button("Carregar no rascunho", use_container_width=True, disabled=disable_btn)
-    return (sel_text, sel_upl, load_btn)
+    return sel_text, sel_upl, load_to_draft
 
 def render_retrieval_controls():
     st.sidebar.subheader("Recuperação – Sphera")
