@@ -44,11 +44,14 @@ if "draft_prompt" not in st.session_state:
 draft = st.text_area("Conteúdo do prompt", key="draft_prompt", height=220)
 
 # 🔹 No handler do botão "Carregar no rascunho"
-sel_text, sel_upl, load_to_draft = render_prompts_selector(prompts_bank=prompts_md)
+sel_text, sel_upl, load_to_draft = render_prompts_selector(prompts_bank=prompts_md, key_prefix="sb_")
 if load_to_draft:
-    merged = "\n".join([st.session_state.get("draft_prompt",""), sel_text or "", sel_upl or ""]).strip()
-    st.session_state["draft_prompt"] = merged
-    st.rerun()  # garante refresh do textarea com o novo valor
+    base = (st.session_state.get("draft_prompt") or "").strip()
+    parts = [base]
+    if sel_text: parts.append(str(sel_text))
+    if sel_upl:  parts.append(str(sel_upl))
+    st.session_state["draft_prompt"] = "\n\n".join([p for p in parts if p]).strip()
+    st.rerun()
 
 
 # Carregar no rascunho (concatenar com segurança)
