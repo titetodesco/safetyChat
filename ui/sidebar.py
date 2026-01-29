@@ -2,68 +2,121 @@
 from __future__ import annotations
 import streamlit as st
 import pandas as pd
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
-from core.sphera import get_sphera_location_col, location_options
+# Helpers leves ---------------------------------------------------------------
 
-def render_prompts_selector(*, prompts_bank: str, key_prefix: str = "sb_") -> Tuple[str|None, str|None, bool]:
+def _unique_locs(df: Optional[pd.DataFrame], col: Optional[str]) -> List[str]:
+    if df is None or col is None or col not in df.columns:
+        return []
+    return (
+        df[col].dropna().astype(str).str.strip().replace({"": None}).dropna().unique().tolist()
+    )
+
+# API pública -----------------------------------------------------------------
+
+def render_prompts_selector(prompts_bank: str | None, key_prefix: str = "sb_") -> Tuple[Optional[str], Optional[str], bool]:
     """
-    Retorna (sel_text, sel_upl, load_to_draft).
-    Usa keys únicas com prefixo para evitar duplicação.
+    Só renderiza o seletor e o botão 'Carregar no rascunho'.
+    O parsing do prompts.md pode continuar do jeito que você já fazia fora daqui.
+    Aqui apenas asseguramos keys únicas.
     """
     with st.sidebar.expander("Assistente de Prompts", expanded=False):
-        # Parse simples: sua lógica já existente que gera txt_opts e upl_opts
-        txt_opts = [f"Prompt {i}" for i in range(1, 6)]
-        upl_opts = [f"Prompt {i}" for i in range(1, 5+1)]
+        # Espera que quem chama passe listas prontas em session_state, como você já fazia
+        txt_opts: List[str] = st.session_state.get("prompt_text_opts", [])
+        upl_opts: List[str] = st.session_state.get("prompt_upl_opts", [])
 
-        # importante: keys únicas
         sel_text = st.selectbox(
             "Texto",
             options=txt_opts,
-            index=None, placeholder="Selecione um prompt (Texto)",
+            index=None,
+            placeholder="Selecione um prompt (Texto)",
             key=f"{key_prefix}sel_text_prompt",
         )
         sel_upl = st.selectbox(
             "Upload",
             options=upl_opts,
-            index=None, placeholder="Selecione um prompt (Upload)",
+            index=None,
+            placeholder="Selecione um prompt (Upload)",
             key=f"{key_prefix}sel_upl_prompt",
         )
 
-        load_to_draft = st.button("Carregar no rascunho", key=f"{key_prefix}load_to_draft", use_container_width=True)
+        load_to_draft = st.button(
+            "Carregar no rascunho",
+            use_container_width=True,
+            key=f"{key_prefix}btn_load_prompt",
+        )
 
     return sel_text, sel_upl, load_to_draft
 
-def render_retrieval_controls():
+
+def render_retrieval_controls() -> Tuple[int, float, int]:
     st.sidebar.subheader("Recuperação – Sphera")
-    k_sph  = st.sidebar.slider("Top-K Sphera", 5, 100, 20, step=5)
-    thr_sph = st.sidebar.slider("Limiar Sphera (cos)", 0.0, 1.0, 0.30, 0.01)
-    years  = st.sidebar.slider("Últimos N anos", 0, 10, 3, 1)
+    k_sph  = st.sidebar.slider("Top-K Sphera", 5, 100, 20, step=5, key="sb_topk_sph")
+    thr_sph = st.sidebar.slider("Limiar Sphera (cos)", 0.0, 1.0, 0.30, 0.01, key="sb_thr_sph")
+    years  = st.sidebar.slider("Últimos N anos", 0, 10, 3, 1, key="sb_years")
     return k_sph, thr_sph, years
 
-def render_advanced_filters(df_sph: pd.DataFrame):
+
+def render_advanced_filters(df_sph: Optional[pd.DataFrame]) -> Tuple[List[str], str, Optional[str], List[str]]:
     st.sidebar.subheader("Filtros avançados – Sphera")
-    loc_col = get_sphera_location_col(df_sph) if df_sph is not None else None
-    loc_opts = location_options(df_sph) if df_sph is not None else []
-    locations = st.sidebar.multiselect("Location", loc_opts, default=[])
-    substr = st.sidebar.text_input("Description contém (substring)", value="")
+
+    # Quem define qual coluna usar é sua função get_sphera_location_col no app.py;
+    # aqui só exibimos opções se receberam (via session_state) a coluna escolhida.
+    loc_col: Optional[str] = st.session_state.get("sphera_loc_col", None)
+    loc_opts = _unique_locs(df_sph, loc_col)
+
+    substr = st.sidebar.text_input(
+        "Description contém (substring)",
+        value="",
+        key="sb_desc_contains",
+        help="Filtro case-insensitive; busca por substring na coluna Description.",
+    )
+
+    locations = st.sidebar.multiselect(
+        "Location (coluna: Location)",
+        options=sorted(loc_opts) if loc_opts else [],
+        default=[],
+        key="sb_locations",
+        placeholder="Escolha uma ou mais opções",
+    )
+
     return locations, substr, loc_col, loc_opts
 
-def render_aggregation_controls():
-    st.sidebar.subheader("Agregação sobre eventos recuperados (Sphera)")
-    agg_mode = st.sidebar.selectbox("Agregação", ["max", "mean"], index=0)
-    per_event_thr = st.sidebar.slider("Limiar por evento (dicionários)", 0.0, 1.0, 0.15, 0.01)
-    support_min = st.sidebar.number_input("Suporte mínimo (nº de eventos)", 1, 100, 1, 1)
-    thr_ws   = st.sidebar.slider("Limiar de similaridade WS", 0.0, 1.0, 0.30, 0.01)
-    thr_prec = st.sidebar.slider("Limiar de similaridade Precursor", 0.0, 1.0, 0.30, 0.01)
-    thr_cp   = st.sidebar.slider("Limiar de similaridade CP", 0.0, 1.0, 0.30, 0.01)
-    top_ws   = st.sidebar.slider("Top-N WS", 1, 50, 10, 1)
-    top_prec = st.sidebar.slider("Top-N Precursores", 1, 50, 10, 1)
-    top_cp   = st.sidebar.slider("Top-N CP", 1, 50, 10, 1)
-    return (agg_mode, per_event_thr, support_min, thr_ws, thr_prec, thr_cp, top_ws, top_prec, top_cp)
 
-def render_util_buttons():
+def render_aggregation_controls() -> Tuple[str, float, int, float, float, float, int, int, int]:
+    st.sidebar.subheader("Agregação sobre eventos recuperados (Sphera)")
+
+    agg_mode = st.sidebar.selectbox(
+        "Agregação",
+        options=["max", "mean"],
+        index=0,
+        key="sb_agg_mode",
+        help="Como consolidar as similaridades de cada termo por evento.",
+    )
+
+    per_event_thr = st.sidebar.slider(
+        "Limiar por evento (dicionários)", 0.0, 1.0, 0.20, 0.01, key="sb_thr_event"
+    )
+    support_min = st.sidebar.slider(
+        "Suporte mínimo (nº de eventos)", 1, 50, 3, 1, key="sb_support_min"
+    )
+
+    st.sidebar.markdown("**Limiares globais (após agregação)**")
+    thr_ws = st.sidebar.slider("Limiar global WS", 0.0, 1.0, 0.30, 0.01, key="sb_thr_ws")
+    thr_prec = st.sidebar.slider("Limiar global Precursores", 0.0, 1.0, 0.30, 0.01, key="sb_thr_prec")
+    thr_cp = st.sidebar.slider("Limiar global CP", 0.0, 1.0, 0.30, 0.01, key="sb_thr_cp")
+
+    st.sidebar.markdown("**Top-N por categoria**")
+    top_ws = st.sidebar.slider("Top-N WS", 1, 50, 10, 1, key="sb_top_ws")
+    top_prec = st.sidebar.slider("Top-N Precursores", 1, 50, 10, 1, key="sb_top_prec")
+    top_cp = st.sidebar.slider("Top-N CP", 1, 50, 10, 1, key="sb_top_cp")
+
+    return agg_mode, per_event_thr, support_min, thr_ws, thr_prec, thr_cp, top_ws, top_prec, top_cp
+
+
+def render_util_buttons() -> Tuple[bool, bool]:
     st.sidebar.subheader("Utilitários")
-    clear_upl  = st.sidebar.button("Limpar uploads", use_container_width=True)
-    clear_chat = st.sidebar.button("Limpar chat", use_container_width=True)
-    return clear_upl, clear_chat
+    clear_upl = st.sidebar.button("Limpar uploads", key="sb_clear_upl", use_container_width=True)
+    clear_chat_btn = st.sidebar.button("Limpar chat", key="sb_clear_chat", use_container_width=True)
+    return clear_upl, clear_chat_btn
