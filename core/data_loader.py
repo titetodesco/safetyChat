@@ -136,3 +136,30 @@ def _load_labels_any(parquet_path: Path, jsonl_path: Path):
             pass
     return None
 
+@st.cache_data(show_spinner=False)
+def load_gosee():
+    df = _load_parquet(GOSEE_PQ_PATH)
+    E  = _load_npz_embeddings_any(GOSEE_NPZ_PATH)
+    if df is None or E is None:
+        return df, E
+    df = df.reset_index(drop=True)
+    n = min(len(df), E.shape[0])
+    if len(df) != n:
+        df = df.iloc[:n].reset_index(drop=True)
+    if E.shape[0] != n:
+        E = E[:n, :]
+    return df, E
+
+@st.cache_data(show_spinner=False)
+def load_incidents():
+    df = _load_parquet(INC_PQ_PATH)
+    E  = _load_npz_embeddings_any(INC_NPZ_PATH)
+    if df is None or E is None:
+        return df, E
+    df = df.reset_index(drop=True)
+    n = min(len(df), E.shape[0])
+    if len(df) != n:
+        df = df.iloc[:n].reset_index(drop=True)
+    if E.shape[0] != n:
+        E = E[:n, :]
+    return df, E
