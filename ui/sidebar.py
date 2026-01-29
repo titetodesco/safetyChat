@@ -1,28 +1,35 @@
-# ui/sidebar.py
 from __future__ import annotations
 import streamlit as st
 import pandas as pd
 from typing import List, Tuple, Optional
 
-# Helpers leves ---------------------------------------------------------------
+# --------------------------- Helpers leves ------------------------------------
 
 def _unique_locs(df: Optional[pd.DataFrame], col: Optional[str]) -> List[str]:
     if df is None or col is None or col not in df.columns:
         return []
     return (
-        df[col].dropna().astype(str).str.strip().replace({"": None}).dropna().unique().tolist()
+        df[col]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .replace({"": None})
+        .dropna()
+        .unique()
+        .tolist()
     )
 
-# API pública -----------------------------------------------------------------
+# ---------------------------- API pública -------------------------------------
 
-def render_prompts_selector(prompts_bank: str | None, key_prefix: str = "sb_") -> Tuple[Optional[str], Optional[str], bool]:
+def render_prompts_selector(
+    prompts_bank: str | None, key_prefix: str = "sb_"
+) -> Tuple[Optional[str], Optional[str], bool]:
     """
-    Só renderiza o seletor e o botão 'Carregar no rascunho'.
-    O parsing do prompts.md pode continuar do jeito que você já fazia fora daqui.
-    Aqui apenas asseguramos keys únicas.
+    Renderiza o seletor e o botão 'Carregar no rascunho'.
+    As listas 'prompt_text_opts' e 'prompt_upl_opts' vêm prontas no session_state
+    (carregadas pelo app a partir de prompts.md).
     """
     with st.sidebar.expander("Assistente de Prompts", expanded=False):
-        # Espera que quem chama passe listas prontas em session_state, como você já fazia
         txt_opts: List[str] = st.session_state.get("prompt_text_opts", [])
         upl_opts: List[str] = st.session_state.get("prompt_upl_opts", [])
 
@@ -52,17 +59,24 @@ def render_prompts_selector(prompts_bank: str | None, key_prefix: str = "sb_") -
 
 def render_retrieval_controls() -> Tuple[int, float, int]:
     st.sidebar.subheader("Recuperação – Sphera")
-    k_sph  = st.sidebar.slider("Top-K Sphera", 5, 100, 20, step=5, key="sb_topk_sph")
-    thr_sph = st.sidebar.slider("Limiar Sphera (cos)", 0.0, 1.0, 0.30, 0.01, key="sb_thr_sph")
-    years  = st.sidebar.slider("Últimos N anos", 0, 10, 3, 1, key="sb_years")
+    k_sph = st.sidebar.slider(
+        "Top-K Sphera", 5, 100, 20, step=5, key="sb_topk_sph"
+    )
+    thr_sph = st.sidebar.slider(
+        "Limiar Sphera (cos)", 0.0, 1.0, 0.30, 0.01, key="sb_thr_sph"
+    )
+    years = st.sidebar.slider(
+        "Últimos N anos", 0, 10, 3, 1, key="sb_years"
+    )
     return k_sph, thr_sph, years
 
 
-def render_advanced_filters(df_sph: Optional[pd.DataFrame]) -> Tuple[List[str], str, Optional[str], List[str]]:
+def render_advanced_filters(
+    df_sph: Optional[pd.DataFrame],
+) -> Tuple[List[str], str, Optional[str], List[str]]:
     st.sidebar.subheader("Filtros avançados – Sphera")
 
-    # Quem define qual coluna usar é sua função get_sphera_location_col no app.py;
-    # aqui só exibimos opções se receberam (via session_state) a coluna escolhida.
+    # A coluna de Location é definida no app e injetada aqui:
     loc_col: Optional[str] = st.session_state.get("sphera_loc_col", None)
     loc_opts = _unique_locs(df_sph, loc_col)
 
@@ -70,11 +84,11 @@ def render_advanced_filters(df_sph: Optional[pd.DataFrame]) -> Tuple[List[str], 
         "Description contém (substring)",
         value="",
         key="sb_desc_contains",
-        help="Filtro case-insensitive; busca por substring na coluna Description.",
+        help="Filtro case-insensitive; busca por substring em Description.",
     )
 
     locations = st.sidebar.multiselect(
-        "Location (coluna: Location)",
+        "Location (coluna: Location)" if loc_col else "Location (não detectada)",
         options=sorted(loc_opts) if loc_opts else [],
         default=[],
         key="sb_locations",
@@ -92,7 +106,7 @@ def render_aggregation_controls() -> Tuple[str, float, int, float, float, float,
         options=["max", "mean"],
         index=0,
         key="sb_agg_mode",
-        help="Como consolidar as similaridades de cada termo por evento.",
+        help="Como consolidar a similaridade dos termos por evento (máx. ou média).",
     )
 
     per_event_thr = st.sidebar.slider(
@@ -103,9 +117,15 @@ def render_aggregation_controls() -> Tuple[str, float, int, float, float, float,
     )
 
     st.sidebar.markdown("**Limiares globais (após agregação)**")
-    thr_ws = st.sidebar.slider("Limiar global WS", 0.0, 1.0, 0.30, 0.01, key="sb_thr_ws")
-    thr_prec = st.sidebar.slider("Limiar global Precursores", 0.0, 1.0, 0.30, 0.01, key="sb_thr_prec")
-    thr_cp = st.sidebar.slider("Limiar global CP", 0.0, 1.0, 0.30, 0.01, key="sb_thr_cp")
+    thr_ws = st.sidebar.slider(
+        "Limiar global WS", 0.0, 1.0, 0.30, 0.01, key="sb_thr_ws"
+    )
+    thr_prec = st.sidebar.slider(
+        "Limiar global Precursores", 0.0, 1.0, 0.30, 0.01, key="sb_thr_prec"
+    )
+    thr_cp = st.sidebar.slider(
+        "Limiar global CP", 0.0, 1.0, 0.30, 0.01, key="sb_thr_cp"
+    )
 
     st.sidebar.markdown("**Top-N por categoria**")
     top_ws = st.sidebar.slider("Top-N WS", 1, 50, 10, 1, key="sb_top_ws")
@@ -117,6 +137,10 @@ def render_aggregation_controls() -> Tuple[str, float, int, float, float, float,
 
 def render_util_buttons() -> Tuple[bool, bool]:
     st.sidebar.subheader("Utilitários")
-    clear_upl = st.sidebar.button("Limpar uploads", key="sb_clear_upl", use_container_width=True)
-    clear_chat_btn = st.sidebar.button("Limpar chat", key="sb_clear_chat", use_container_width=True)
+    clear_upl = st.sidebar.button(
+        "Limpar uploads", key="sb_clear_upl", use_container_width=True
+    )
+    clear_chat_btn = st.sidebar.button(
+        "Limpar chat", key="sb_clear_chat", use_container_width=True
+    )
     return clear_upl, clear_chat_btn
