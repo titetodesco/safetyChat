@@ -79,11 +79,13 @@ def load_sphera():
     return df, E
 
 
-# ---------- (2) Prompts & Contexto ----------
 @st.cache_data(show_spinner=False)
-def load_prompts_md():
-    """Lê data/prompts/prompts.md (ou o caminho configurado) como string."""
-    p = Path(PROMPTS_MD_PATH) if PROMPTS_MD_PATH else None
+def load_prompts_md(path: str | Path | None = None) -> str:
+    """
+    Lê o prompts.md do caminho fornecido OU do PROMPTS_MD_PATH do config.
+    Aceita None (usa config), str ou Path.
+    """
+    p = Path(path) if path else (Path(PROMPTS_MD_PATH) if PROMPTS_MD_PATH else None)
     if not p or not p.exists():
         return ""
     try:
@@ -92,16 +94,18 @@ def load_prompts_md():
         return ""
 
 @st.cache_data(show_spinner=False)
-def load_datasets_context():
-    """Lê datasets_context.md (sempre injetado no contexto)."""
-    p = Path(DATASETS_CONTEXT_PATH) if DATASETS_CONTEXT_PATH else None
+def load_datasets_context(path: str | Path | None = None) -> str:
+    """
+    Lê o datasets_context.md do caminho fornecido OU do DATASETS_CONTEXT_PATH do config.
+    Aceita None (usa config), str ou Path.
+    """
+    p = Path(path) if path else (Path(DATASETS_CONTEXT_PATH) if DATASETS_CONTEXT_PATH else None)
     if not p or not p.exists():
         return ""
     try:
         return p.read_text(encoding="utf-8")
     except Exception:
         return ""
-
 
 # ---------- (3) Dicionários (seu loader atual pode chamar isto) ----------
 @st.cache_data(show_spinner=False)
