@@ -14,8 +14,18 @@ from core.context_builder import hits_dataframe, build_dic_matches_md, build_sph
 from core.data_loader import load_dicts
 from services.llm_client import chat
 from ui.tables import show_debug_raw  # <- import absoluto (evita erro de import)
+from core.data_loader import load_gosee, load_incidents
+from core.sphera import topk_similar  # já existente
+
+# Carrega as outras bases
+df_gosee, E_gosee = load_gosee()
+df_inc,   E_inc   = load_incidents()
 
 st.set_page_config(page_title="SAFETY  CHAT ", layout="wide")
+
+# Recupera similares (sem filtros avançados, a menos que você deseje algum específico)
+hits_gosee = topk_similar(user_input, df_gosee, E_gosee, topk=k_sph, min_sim=thr_sph) if E_gosee is not None else []
+hits_inc   = topk_similar(user_input, df_inc,   E_inc,   topk=k_sph, min_sim=thr_sph) if E_inc   is not None else []
 
 go_btn, user_text, df_sph, E_sph, datasets_ctx, prompts_md, upl_texts = render_main()
 
@@ -80,8 +90,10 @@ if go_btn:
     # 5) Contexto ao LLM (texto — o modelo NÃO “vê” embeddings, vê o contexto)
     ctx_lines = [
         datasets_ctx,
-        build_sphera_context_md(hits, loc_col_effective),
-        build_dic_matches_md(dic_res),
+        build_sphera_context_md(hits_sphera, loc_col_effective),   # já existia
+        build_gosee_context_md(hits_gosee),                        # você pode criar uma função irmã no context_builder
+        build_investigation_context_md(hits_inc),                  # idem
+        build_dic_matches_md(dic_res),                             # agregação dos dicionários — somente Sphera
     ]
     ctx_full = "\n".join([c for c in ctx_lines if c])
 
