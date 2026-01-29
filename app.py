@@ -20,6 +20,8 @@ from ui.tables import show_debug_raw  # <- import absoluto (evita erro de import
 from core.data_loader import load_gosee, load_incidents
 from core.sphera import topk_similar  # já existente
 
+PROMPT_ASSISTANT_ENABLED = False  # << desliga o assistente temporariamente
+
 # Carrega as outras bases
 df_gosee, E_gosee = load_gosee()
 df_inc, E_inc = load_incidents()
@@ -44,15 +46,24 @@ if "draft_prompt" not in st.session_state:
 draft = st.text_area("Conteúdo do prompt", key="draft_prompt", height=220)
 
 # 🔹 No handler do botão "Carregar no rascunho"
-sel_text, sel_upl, load_to_draft = render_prompts_selector(prompts_bank=prompts_md, key_prefix="sb_")
-if load_to_draft:
-    base = (st.session_state.get("draft_prompt") or "").strip()
-    parts = [base]
-    if sel_text: parts.append(str(sel_text))
-    if sel_upl:  parts.append(str(sel_upl))
-    st.session_state["draft_prompt"] = "\n\n".join([p for p in parts if p]).strip()
-    st.rerun()
+#sel_text, sel_upl, load_to_draft = render_prompts_selector(prompts_bank=prompts_md, key_prefix="sb_")
+#if load_to_draft:
+#    base = (st.session_state.get("draft_prompt") or "").strip()
+#    parts = [base]
+#    if sel_text: parts.append(str(sel_text))
+#    if sel_upl:  parts.append(str(sel_upl))
+#    st.session_state["draft_prompt"] = "\n\n".join([p for p in parts if p]).strip()
+#    st.rerun()
 
+if PROMPT_ASSISTANT_ENABLED:
+    sel_text, sel_upl, load_to_draft = render_prompts_selector(prompts_bank=prompts_md, key_prefix="sb_")
+    if load_to_draft:
+        base = (st.session_state.get("draft_prompt") or "").strip()
+        parts = [base]
+        if sel_text: parts.append(sel_text)
+        if sel_upl:  parts.append(sel_upl)
+        st.session_state["draft_prompt"] = "\n\n".join([p for p in parts if p]).strip()
+        st.rerun()
 
 # Carregar no rascunho (concatenar com segurança)
 sel_text, sel_upl, load_to_draft = render_prompts_selector(prompts_bank=prompts_md)
