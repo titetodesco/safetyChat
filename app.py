@@ -10,7 +10,10 @@ from ui.main import render_main
 
 from core.sphera import filter_sphera, get_sphera_location_col, topk_similar
 from core.dictionaries import aggregate_dict_matches_over_hits
-from core.context_builder import hits_dataframe, build_dic_matches_md, build_sphera_context_md
+from core.context_builder import (
+    hits_dataframe, build_dic_matches_md, build_sphera_context_md,
+    build_gosee_context_md, build_investigation_context_md,   # <- importe os novos
+)
 from core.data_loader import load_dicts
 from services.llm_client import chat
 from ui.tables import show_debug_raw  # <- import absoluto (evita erro de import)
@@ -89,11 +92,11 @@ if go_btn:
 
     # 5) Contexto ao LLM (texto — o modelo NÃO “vê” embeddings, vê o contexto)
     ctx_lines = [
-        datasets_ctx,
-        build_sphera_context_md(hits_sphera, loc_col_effective),   # já existia
-        build_gosee_context_md(hits_gosee),                        # você pode criar uma função irmã no context_builder
-        build_investigation_context_md(hits_inc),                  # idem
-        build_dic_matches_md(dic_res),                             # agregação dos dicionários — somente Sphera
+        datasets_ctx,  # seus arquivos .md globais continuam injetados sempre
+        build_sphera_context_md(hits, loc_col_effective),           # já existia
+        build_gosee_context_md(hits_gosee),                         # novo (se você estiver recuperando GoSee)
+        build_investigation_context_md(hits_inc),                   # novo (se você estiver recuperando relatórios)
+        build_dic_matches_md(dic_res),                              # WS/Precursores/CP agregados somente sobre Sphera
     ]
     ctx_full = "\n".join([c for c in ctx_lines if c])
 
