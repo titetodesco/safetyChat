@@ -17,9 +17,16 @@ SPH_NPZ_PATH = AN_DIR / "sphera_embeddings.npz"
 GOSEE_PQ_PATH  = AN_DIR / "gosee.parquet"            # <- ajuste se seu nome for outro
 GOSEE_NPZ_PATH = AN_DIR / "gosee_embeddings.npz"     # <- idem
 
-# Relatórios de investigação
-INC_PQ_PATH  = AN_DIR / "investigations.parquet"     # <- ajuste se seu nome for outro
-INC_NPZ_PATH = AN_DIR / "investigations_embeddings.npz"
+# CP (taxonomia)
+CP_NPZ_MAIN   = AN_DIR / "cp_embeddings.npz"
+CP_NPZ_ALT    = None  # se não tiver alternativo, deixe None
+CP_LBL_PARQ   = AN_DIR / "cp_labels.parquet"
+CP_LBL_JSONL  = AN_DIR / "cp_labels.jsonl"   # fallback se o parquet faltar
+
+# Investigations / History
+INC_NPZ_PATH  = AN_DIR / "history_embeddings.npz"
+INC_PQ_PATH   = None                         # não há parquet
+INC_JSONL_PATH= AN_DIR / "history_texts.jsonl"
 
 PROMPTS_MD_PATH = DATA_DIR / "prompts" / "prompts.md"
 DATASETS_CONTEXT_PATH = DOCS_DIR / "datasets_context.md"
