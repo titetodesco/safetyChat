@@ -32,6 +32,27 @@ with st.expander("📁 Debug data/analytics (conteúdo no runtime)", expanded=Tr
 
 st.set_page_config(page_title="SAFETY • CHAT", layout="wide")
 
+with st.expander("🧠 Debug contexto para o LLM", expanded=True):
+    st.write("len(datasets_ctx) =", len(datasets_ctx or ""))
+    preview_ctx = (datasets_ctx or "")[:500]
+    st.code(preview_ctx if preview_ctx else "(vazio)")
+
+    # Se você também monta um 'sphera_context_md' e 'dic_matches_md':
+    try:
+        from core.context_builder import build_sphera_context_md, build_dic_matches_md
+        if 'hits' in locals():
+            sph_ctx = build_sphera_context_md(hits, get_sphera_location_col(df_sph))
+            st.write("len(sphera_context_md) =", len(sph_ctx or ""))
+            st.code((sph_ctx or "")[:500])
+        # Se tiver dic_res:
+        if 'dic_res' in locals():
+            dic_ctx = build_dic_matches_md(dic_res)
+            st.write("len(dic_matches_md) =", len(dic_ctx or ""))
+            st.code((dic_ctx or "")[:500])
+    except Exception as e:
+        st.warning(f"(Depuração contexto) Falha ao montar previews: {e}")
+
+
 # --------------------- Estado base (sempre antes dos widgets) ---------------------
 ss = st.session_state
 ss.setdefault("draft_prompt", "")
