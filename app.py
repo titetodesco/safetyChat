@@ -124,17 +124,6 @@ if go_btn:
         # Importante: topk_similar usa o MESMO encoder dos embeddings pré-calculados
         hits = topk_similar(user_input, df_base, E_sph, topk=k_sph, min_sim=thr_sph)
 
-    with st.expander("🛠️ Diagnóstico RAG", expanded=True):
-        st.json({
-            "len(df_sph)": len(df_sph) if isinstance(df_sph, pd.DataFrame) else 0,
-            "len(df_base)": len(df_base) if isinstance(df_base, pd.DataFrame) else 0,
-            "E_sph.shape": tuple(E_sph.shape) if E_sph is not None else None,
-            "hits": len(hits),
-            "k_sph": k_sph,
-            "thr_sph": thr_sph,
-            "loc_col_effective": loc_col_eff,
-        })
-
     st.subheader(f"Eventos do Sphera (Top-{min(k_sph, len(hits))})")
     if hits:
         st.dataframe(hits_dataframe(hits, loc_col_eff), use_container_width=True, hide_index=True)
