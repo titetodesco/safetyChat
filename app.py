@@ -21,6 +21,15 @@ from ui.sidebar import (
     render_util_buttons,
 )
 
+import os
+from config import SPH_PQ_PATH, SPH_NPZ_PATH
+
+with st.expander("📁 Verificação de arquivos (Sphera)", expanded=True):
+    pq = SPH_PQ_PATH.resolve()
+    npz = SPH_NPZ_PATH.resolve()
+    st.write("Parquet:", str(pq), "existe?", pq.exists(), "tamanho:", os.path.getsize(pq) if pq.exists() else None)
+    st.write("Embeddings:", str(npz), "existe?", npz.exists(), "tamanho:", os.path.getsize(npz) if npz.exists() else None)
+
 st.set_page_config(page_title="SAFETY • CHAT", layout="wide")
 
 # --------------------- Estado base (sempre antes dos widgets) ---------------------
