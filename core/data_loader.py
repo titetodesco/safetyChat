@@ -9,6 +9,7 @@ import urllib.request, os
 #from config import SPH_NPZ_PATH, SPH_NPZ_URL
 from config import SPH_PQ_PATH, SPH_NPZ_PATH
 # import tolerante das constantes do config
+
 try:
     from config import (
         SPH_PQ_PATH, SPH_NPZ_PATH,
@@ -28,6 +29,14 @@ except Exception:
     CP_NPZ_MAIN = CP_NPZ_ALT = CP_LBL_PARQ = CP_LBL_JSONL = None
     GOSEE_PQ_PATH = GOSEE_NPZ_PATH = None
     INC_PQ_PATH = INC_NPZ_PATH = INC_JSONL_PATH = None
+
+def _to_path(p):
+    """Aceita Path | str | None e retorna Path ou None, sem explodir."""
+    if isinstance(p, Path):
+        return p
+    if isinstance(p, str) and p.strip():
+        return Path(p)
+    return None
 
 @st.cache_data(show_spinner=False)
 def _load_parquet(path: Path | None):
@@ -214,45 +223,45 @@ def _ensure_npz_local(npz_path: Path, url: str) -> bool:
 
 @st.cache_data(show_spinner=False)
 def load_sphera():
-    """
-    Carrega a base Sphera e seus embeddings.
-    - df: lido de SPH_PQ_PATH (parquet). Se ausente/erro -> DataFrame vazio.
-    - E:  lido de SPH_NPZ_PATH (npz). Se ausente/erro -> None.
-    Nunca usa checagem booleana sobre DataFrame/ndarray.
-    """
-    # -------- DF --------
-    df = pd.DataFrame()
+    from config import SPH_PQ_PATH, SPH_NPZ_PATH  # importa no runtime para evitar cache velho
+    pq = _to_path(SPH_PQ_PATH)
+    npz = _to_path(SPH_NPZ_PATH)
+
+    # Diagnóstico explícito
+    st.write({
+        "DEBUG_SPHERA": {
+            "config_file": __import__("config").__file__,
+            "SPH_PQ_PATH_repr": repr(SPH_PQ_PATH),
+            "SPH_NPZ_PATH_repr": repr(SPH_NPZ_PATH),
+            "pq_type": type(pq).__name__,
+            "npz_type": type(npz).__name__,
+            "pq_exists": (pq and pq.exists()),
+            "npz_exists": (npz and npz.exists()),
+        }
+    })
+
+    if pq is None or npz is None:
+        st.error("[RAG] SPH_PQ_PATH ou SPH_NPZ_PATH vieram None/invalid. Confira config.py.")
+        return pd.DataFrame(), None
+
+    df = None
     try:
-        if SPH_PQ_PATH is None or not isinstance(SPH_PQ_PATH, Path):
-            st.error("[RAG] SPH_PQ_PATH é None ou não é Path. Confira config.py.")
-        elif not SPH_PQ_PATH.exists():
-            st.error(f"[RAG] Parquet inexistente: {SPH_PQ_PATH}")
-        else:
-            df = pd.read_parquet(SPH_PQ_PATH)
+        df = pd.read_parquet(pq)
     except Exception as e:
-        st.error(f"[RAG] Falha ao ler parquet {SPH_PQ_PATH}: {e}")
+        st.error(f"[RAG] Falha ao ler Parquet {pq}: {e}")
         df = pd.DataFrame()
 
-    # -------- Embeddings --------
     E = None
     try:
-        if SPH_NPZ_PATH is None or not isinstance(SPH_NPZ_PATH, Path):
-            st.error("[RAG] SPH_NPZ_PATH é None ou não é Path. Confira config.py.")
-        elif not SPH_NPZ_PATH.exists():
-            st.error(f"[RAG] NPZ inexistente: {SPH_NPZ_PATH}")
-        else:
-            npz = np.load(SPH_NPZ_PATH, allow_pickle=True)
-            for key in ("embeddings", "E", "vectors", "arr_0"):
-                if key in npz.files:
-                    arr = npz[key]
-                    if arr is not None and arr.ndim == 1:
-                        arr = np.stack(arr)
-                    E = arr.astype(np.float32, copy=False)
-                    break
-            if E is None:
-                st.error(f"[RAG] {SPH_NPZ_PATH} não contém chave de embeddings conhecida.")
+        # np.load retorna dict-like (npz); padronizamos para matriz 2D
+        with np.load(npz) as z:
+            # aceita chaves comuns: 'embeddings', 'E', 'arr_0'
+            key = "embeddings" if "embeddings" in z.files else ("E" if "E" in z.files else z.files[0])
+            E = z[key]
+            if E is None or not hasattr(E, "shape"):
+                raise ValueError("NPZ não contém array válido.")
     except Exception as e:
-        st.error(f"[RAG] Falha ao ler NPZ {SPH_NPZ_PATH}: {e}")
+        st.error(f"[RAG] Falha ao ler NPZ {npz}: {e}")
         E = None
 
     return df, E
