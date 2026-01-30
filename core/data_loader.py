@@ -14,8 +14,8 @@ try:
         SPH_PQ_PATH, SPH_NPZ_PATH,
         PROMPTS_MD_PATH, DATASETS_CONTEXT_PATH,
         # se você tiver os demais, mantêm aqui...
-        WS_NPZ, WS_LBL_PARQ, WS_LBL_JSONL,
-        PREC_NPZ, PREC_LBL_PARQ, PREC_LBL_JSONL,
+        WS_NPZ, WS_PARQ, WS_LBL_PARQ, WS_LBL_JSONL,
+        PREC_NPZ, PREC_PARQ, PREC_LBL_PARQ, PREC_LBL_JSONL,
         CP_NPZ_MAIN, CP_NPZ_ALT, CP_LBL_PARQ, CP_LBL_JSONL,
         GOSEE_PQ_PATH, GOSEE_NPZ_PATH,
         INC_PQ_PATH, INC_NPZ_PATH, INC_JSONL_PATH,
@@ -75,22 +75,6 @@ def _load_npz_embeddings_any(path: Path | None):
         st.error(f"[RAG] Falha ao ler NPZ {path}: {e}")
         return None
 
-# ---------- (1) Sphera ----------
-'''@st.cache_data(show_spinner=False)
-def load_sphera():
-    """Carrega Sphera (parquet + embeddings .npz) e alinha os comprimentos."""
-    df = _load_parquet(SPH_PQ_PATH)
-    E  = _load_npz_embeddings_any(SPH_NPZ_PATH)
-    if df is None or E is None:
-        return df, E
-    df = df.reset_index(drop=True)
-    n = min(len(df), E.shape[0])
-    if len(df) != n:
-        df = df.iloc[:n].reset_index(drop=True)
-    if E.shape[0] != n:
-        E = E[:n, :]
-    return df, E  '''
-
 
 @st.cache_data(show_spinner=False)
 def load_prompts_md(path: str | Path | None = None) -> str:
@@ -122,39 +106,55 @@ def load_datasets_context(path: str | Path | None = None) -> str:
 
 # ---------- (3) Dicionários (seu loader atual pode chamar isto) ----------
 @st.cache_data(show_spinner=False)
-def _load_labels_any(parquet_path: Path | None, jsonl_path: Path | None):
-    """Carrega labels (WS/Prec/CP) com checagens explícitas para evitar ValueError do pandas."""
-    df = _load_parquet(parquet_path) if parquet_path else None
+def _load_labels_any(parquet_path: Path | None, jsonl_path: Path | None) -> pd.DataFrame:
+    """
+    Carrega labels primeiro de PARQUET; se vazio/ausente, tenta JSONL.
+    Retorna sempre um DataFrame (vazio se não achar).
+    """
+    df = None
+    if parquet_path is not None and parquet_path.exists():
+        try:
+            df = pd.read_parquet(parquet_path)
+        except Exception as e:
+            st.error(f"[RAG] Falha ao ler labels PARQUET {parquet_path}: {e}")
+            df = None
+
     if df is not None and not df.empty:
         return df
 
-    df = _load_jsonl(jsonl_path) if jsonl_path else None
-    if df is not None and not df.empty:
-        return df
+    if jsonl_path is not None and jsonl_path.exists():
+        try:
+            df = pd.read_json(jsonl_path, lines=True)
+        except Exception as e:
+            st.error(f"[RAG] Falha ao ler labels JSONL {jsonl_path}: {e}")
+            df = None
 
-    return pd.DataFrame()
+    if df is None:
+        df = pd.DataFrame()
+    return df
 
 @st.cache_data(show_spinner=False)
 def load_dicts():
     """
-    Retorna: (E_ws, L_ws, E_prec, L_prec, E_cp, L_cp)
+    Retorna (E_ws, L_ws, E_prec, L_prec, E_cp, L_cp).
+
     Estratégia:
-      - Tenta NPZ; se não houver, tenta PARQUET (coluna embedding/vector/emb/embeddings).
-      - Labels: primeiro PARQUET; se vazio/ausente, JSONL; nunca usar 'or' com DataFrame.
+      - Embeddings: tenta NPZ; se None, tenta PARQUET (colunas embedding/vector/...).
+      - Labels: PARQUET -> JSONL. Nunca usa 'or' entre DataFrames.
     """
-    # --- WS ---
+    # WS
     E_ws = _load_npz_embeddings_any(WS_NPZ)
-    if E_ws is None:
+    if E_ws is None and WS_PARQ is not None:
         E_ws = _load_embeddings_from_parquet(WS_PARQ)
     L_ws = _load_labels_any(WS_LBL_PARQ, WS_LBL_JSONL)
 
-    # --- PRECURSORES ---
+    # PRECURSORES
     E_prec = _load_npz_embeddings_any(PREC_NPZ)
-    if E_prec is None:
+    if E_prec is None and PREC_PARQ is not None:
         E_prec = _load_embeddings_from_parquet(PREC_PARQ)
     L_prec = _load_labels_any(PREC_LBL_PARQ, PREC_LBL_JSONL)
 
-    # --- CP ---
+    # CP
     E_cp = _load_npz_embeddings_any(CP_NPZ_MAIN)
     if E_cp is None:
         E_cp = _load_npz_embeddings_any(CP_NPZ_ALT)
