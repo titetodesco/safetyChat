@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 from pathlib import Path
 import pandas as pd
@@ -50,36 +49,31 @@ def _load_jsonl(path: Path | None):
         return None
 
 @st.cache_data(show_spinner=False)
-def _load_npz_embeddings_any(npz_path: Path | str):
-    """Carrega embeddings de um .npz aceitando chaves comuns ('embeddings', 'E', 'arr_0').
-    Retorna np.ndarray ou None. NÃO usa `if E:` para evitar ambiguidade NumPy.
+def _load_npz_embeddings_any(path: Path | None):
     """
+    Carrega um .npz que contenha embeddings.
+    Retorna np.ndarray ou None. Nunca usa checagem booleana sobre arrays.
+    """
+    if path is None or not isinstance(path, Path):
+        return None
     try:
-        npz_path = Path(npz_path)
-        if not npz_path.exists():
-            st.error(f"[RAG] NPZ não encontrado: {npz_path}")
+        if not path.exists():
+            st.warning(f"[RAG] NPZ não encontrado: {path}")
             return None
-
-        data = np.load(npz_path)
-        for key in ("embeddings", "E", "arr_0"):
+        data = np.load(path, allow_pickle=True)
+        # Tente chaves comuns em ordem
+        for key in ("embeddings", "E", "vectors", "arr_0"):
             if key in data.files:
-                E = data[key]
-                # normaliza dtype; não normaliza vetores aqui (fica para a busca)
-                if E.dtype not in (np.float32, np.float64):
-                    E = E.astype(np.float32)
-                # sanity básica de 2D
-                if E.ndim != 2:
-                    st.error(f"[RAG] Embeddings com ndim={E.ndim}, esperado 2 em {npz_path}")
-                    return None
-                return E
-
-        st.error(f"[RAG] Chaves esperadas não encontradas em {npz_path}. Encontradas: {list(data.files)}")
+                arr = data[key]
+                # Garante 2D
+                if arr is not None and arr.ndim == 1:
+                    arr = np.stack(arr)
+                return arr.astype(np.float32, copy=False)
+        st.error(f"[RAG] NPZ {path} não contém chave de embeddings conhecida.")
         return None
-
     except Exception as e:
-        st.error(f"[RAG] Falha ao ler NPZ {npz_path}: {e}")
+        st.error(f"[RAG] Falha ao ler NPZ {path}: {e}")
         return None
-
 
 # ---------- (1) Sphera ----------
 '''@st.cache_data(show_spinner=False)
@@ -254,21 +248,25 @@ def load_sphera():
         # Garante retorno consistente mesmo em erro
         return (df if df is not None else pd.DataFrame(), E)
 
-def _load_embeddings_from_parquet(parquet_path: Path, col_candidates=("embedding","vector","emb","embeddings")):
-    """Se não houver NPZ, tenta carregar embeddings de um .parquet em uma coluna list-like."""
+def _load_embeddings_from_parquet(parquet_path: Path,
+                                  col_candidates=("embedding", "embeddings", "vector", "vectors", "emb")):
+    """
+    Se não houver NPZ, tenta carregar embeddings de um .parquet.
+    A coluna deve conter listas/arrays por linha. Retorna np.ndarray ou None.
+    """
     try:
-        if not parquet_path or not parquet_path.exists():
+        if parquet_path is None or not parquet_path.exists():
             return None
-        df = pd.read_parquet(parquet_path)
+        dfp = pd.read_parquet(parquet_path)
         for c in col_candidates:
-            if c in df.columns:
-                vals = df[c].to_list()
-                import numpy as np
-                E = np.array(vals, dtype=np.float32)
-                if E.ndim == 1:  # caso seja série de lists/objects
-                    E = np.stack(E)
-                return E
-        st.warning(f"[RAG] {parquet_path} não tem nenhuma coluna de vetor entre {col_candidates}.")
+            if c in dfp.columns:
+                vals = dfp[c].to_list()
+                arr = np.array(vals, dtype=object)
+                # “explode” a lista de listas em 2D
+                if arr.ndim == 1:
+                    arr = np.stack(arr).astype(np.float32)
+                return arr
+        st.warning(f"[RAG] {parquet_path} não tem coluna de vetor entre {col_candidates}.")
         return None
     except Exception as e:
         st.error(f"[RAG] Falha ao ler embeddings do parquet {parquet_path}: {e}")
