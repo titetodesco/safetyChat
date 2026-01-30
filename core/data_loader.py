@@ -1,304 +1,215 @@
 from __future__ import annotations
-from pathlib import Path
-import pandas as pd
-import numpy as np
-import streamlit as st
 import json
+from pathlib import Path
+from typing import Optional, Tuple, List
 
-import urllib.request, os
-#from config import SPH_NPZ_PATH, SPH_NPZ_URL
-from config import SPH_PQ_PATH, SPH_NPZ_PATH
-# import tolerante das constantes do config
+import numpy as np
+import pandas as pd
+import streamlit as st
 
-try:
-    from config import (
-        SPH_PQ_PATH, SPH_NPZ_PATH,
-        PROMPTS_MD_PATH, DATASETS_CONTEXT_PATH,
-        # se você tiver os demais, mantêm aqui...
-        WS_NPZ, WS_LBL_PARQ, WS_LBL_JSONL,
-        PREC_NPZ, PREC_LBL_PARQ, PREC_LBL_JSONL,
-        CP_NPZ_MAIN, CP_NPZ_ALT, CP_LBL_PARQ, CP_LBL_JSONL,
-        GOSEE_PQ_PATH, GOSEE_NPZ_PATH,
-        INC_PQ_PATH, INC_NPZ_PATH, INC_JSONL_PATH,
-    )
-except Exception:
-    SPH_PQ_PATH = SPH_NPZ_PATH = None
-    PROMPTS_MD_PATH = DATASETS_CONTEXT_PATH = None
-    WS_NPZ = WS_LBL_PARQ = WS_LBL_JSONL = None
-    PREC_NPZ = PREC_LBL_PARQ = PREC_LBL_JSONL = None
-    CP_NPZ_MAIN = CP_NPZ_ALT = CP_LBL_PARQ = CP_LBL_JSONL = None
-    GOSEE_PQ_PATH = GOSEE_NPZ_PATH = None
-    INC_PQ_PATH = INC_NPZ_PATH = INC_JSONL_PATH = None
+from config import (
+    # Pastas & docs
+    DATASETS_CONTEXT_PATH, PROMPTS_MD_PATH,
 
-def _to_path(p):
-    """Aceita Path | str | None e retorna Path ou None, sem explodir."""
-    if isinstance(p, Path):
-        return p
-    if isinstance(p, str) and p.strip():
-        return Path(p)
-    return None
+    # Sphera
+    SPH_PQ_PATH, SPH_NPZ_PATH,
+
+    # GoSee
+    GOSEE_PQ_PATH, GOSEE_NPZ_PATH,
+
+    # Incidents / History
+    INC_JSONL_PATH, INC_NPZ_PATH, INC_PQ_PATH,
+
+    # Dicionários
+    WS_NPZ, WS_LBL_PARQ, WS_LBL_JSONL,
+    PREC_NPZ, PREC_LBL_PARQ, PREC_LBL_JSONL,
+    CP_NPZ_MAIN, CP_NPZ_ALT, CP_LBL_PARQ, CP_LBL_JSONL,
+)
+
+# ---------------- Utilitários de IO ----------------
 
 @st.cache_data(show_spinner=False)
-def _load_parquet(p):
-    p = _coerce_path(p)
-    if p is None or not p.exists():
+def _load_parquet(path: Optional[Path]) -> Optional[pd.DataFrame]:
+    if not isinstance(path, Path):
         return None
-    import pandas as pd
+    if not path.exists():
+        return None
     try:
-        return pd.read_parquet(p)
-    except Exception as e:
-        st.error(f"[RAG] Falha ao ler parquet {p}: {e}")
+        return pd.read_parquet(path)
+    except Exception:
         return None
 
 @st.cache_data(show_spinner=False)
-def _load_jsonl(p):
-    p = _coerce_path(p)
-    if p is None or not p.exists():
+def _load_jsonl(path: Optional[Path]) -> Optional[pd.DataFrame]:
+    if not isinstance(path, Path):
         return None
-    import pandas as pd, json
+    if not path.exists():
+        return None
     try:
-        rows = []
-        with open(p, "r", encoding="utf-8") as fh:
+        rows: List[dict] = []
+        with path.open("r", encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if not line:
                     continue
                 rows.append(json.loads(line))
         return pd.DataFrame(rows)
-    except Exception as e:
-        st.error(f"[RAG] Falha ao ler jsonl {p}: {e}")
+    except Exception:
         return None
 
 @st.cache_data(show_spinner=False)
-def _load_npz_embeddings_any(path):
-    import numpy as np
-    path = _coerce_path(path)
-    if path is None:
-        # silencia: pode ser normal não ter NPZ para WS/PREC
-        return None
+def _load_npz_embeddings_strict(path: Optional[Path]) -> np.ndarray:
+    """
+    Carrega embeddings NUMPY (strict): falha claramente se ausente/invalid.
+    Espera-se chave 'embeddings' OU array raiz em np.load(...).
+    """
+    if not isinstance(path, Path):
+        raise FileNotFoundError("Caminho NPZ inválido (None ou não-Path).")
     if not path.exists():
-        st.warning(f"[RAG] NPZ não encontrado: {path}")
-        return None
-    try:
-        f = np.load(path, allow_pickle=False)
-        for key in ("arr_0", "embeddings", "E", "data"):
-            if key in f:
-                return np.array(f[key], dtype=float, copy=False)
-        # senão, pega a 1ª 2D
-        for key in f.files:
-            arr = np.array(f[key], copy=False)
-            if arr.ndim >= 2:
-                return arr.astype(float, copy=False)
-        if f.files:
-            return np.array(f[f.files[0]], dtype=float, copy=False)
-        st.error(f"[RAG] NPZ sem arrays utilizáveis: {path}")
-        return None
-    except Exception as e:
-        st.error(f"[RAG] Falha ao ler NPZ {path}: {e}")
-        return None
+        raise FileNotFoundError(f"NPZ não encontrado: {path}")
 
+    with np.load(path, allow_pickle=False) as npz:
+        # Se há uma única chave 'arr_0', tratamos como array raiz.
+        if "embeddings" in npz.files:
+            arr = npz["embeddings"]
+        elif "arr_0" in npz.files and len(npz.files) == 1:
+            arr = npz["arr_0"]
+        else:
+            # tenta achar a primeira chave com shape 2D
+            candidates = [k for k in npz.files if np.array(npz[k]).ndim == 2]
+            if not candidates:
+                raise ValueError(f"NPZ {path} sem matriz 2D de embeddings.")
+            arr = np.array(npz[candidates[0]])
 
-@st.cache_data(show_spinner=False)
-def load_prompts_md(path: str | Path | None = None) -> str:
-    """
-    Lê o prompts.md do caminho fornecido OU do PROMPTS_MD_PATH do config.
-    Aceita None (usa config), str ou Path.
-    """
-    p = Path(path) if path else (Path(PROMPTS_MD_PATH) if PROMPTS_MD_PATH else None)
-    if not p or not p.exists():
-        return ""
-    try:
-        return p.read_text(encoding="utf-8")
-    except Exception:
-        return ""
+    if not isinstance(arr, np.ndarray) or arr.ndim != 2:
+        raise ValueError(f"Embeddings inválidos em {path} (esperado 2D).")
+    return arr
+
+# ---------------- Carregadores de Docs ----------------
 
 @st.cache_data(show_spinner=False)
-def load_datasets_context(path: str | Path | None = None) -> str:
-    """
-    Lê o datasets_context.md do caminho fornecido OU do DATASETS_CONTEXT_PATH do config.
-    Aceita None (usa config), str ou Path.
-    """
-    p = Path(path) if path else (Path(DATASETS_CONTEXT_PATH) if DATASETS_CONTEXT_PATH else None)
-    if not p or not p.exists():
-        return ""
-    try:
-        return p.read_text(encoding="utf-8")
-    except Exception:
-        return ""
-
-# ---------- (3) Dicionários (seu loader atual pode chamar isto) ----------
-@st.cache_data(show_spinner=False)
-def _load_labels_any(parquet_path: Path | None, jsonl_path: Path | None):
-    """Carrega rótulos (labels) de um parquet OU de um jsonl, de forma explícita.
-    Nunca use 'df1 or df2' com DataFrame (ambíguo em pandas)."""
-    # tenta parquet
-    if parquet_path and parquet_path.exists():
+def load_datasets_context(path: Optional[Path]) -> Optional[str]:
+    if isinstance(path, Path) and path.exists():
         try:
-            import pandas as pd
-            return pd.read_parquet(parquet_path)
-        except Exception as e:
-            st.warning(f"[RAG] Falha ao ler PARQUET {parquet_path}: {e}")
-    # fallback para jsonl
-    if jsonl_path and jsonl_path.exists():
-        try:
-            import pandas as pd, json
-            rows = []
-            with open(jsonl_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    rows.append(json.loads(line))
-            return pd.DataFrame(rows)
-        except Exception as e:
-            st.warning(f"[RAG] Falha ao ler JSONL {jsonl_path}: {e}")
+            return path.read_text(encoding="utf-8")
+        except Exception:
+            return None
     return None
 
+@st.cache_data(show_spinner=False)
+def load_prompts_md(path: Optional[Path]) -> Optional[str]:
+    if isinstance(path, Path) and path.exists():
+        try:
+            return path.read_text(encoding="utf-8")
+        except Exception:
+            return None
+    return None
+
+# ---------------- Carregadores de Bases com Embeddings ----------------
+
+@st.cache_data(show_spinner=False)
+def load_sphera() -> Tuple[pd.DataFrame, np.ndarray | None]:
+    df = _load_parquet(SPH_PQ_PATH)
+    if df is None or df.empty:
+        df = pd.DataFrame()
+        E = None
+        return df, E
+
+    try:
+        E = _load_npz_embeddings_strict(SPH_NPZ_PATH)
+    except Exception as e:
+        st.error(f"[RAG] Falha ao ler NPZ {SPH_NPZ_PATH}: {e}")
+        return df, None
+
+    # Ajuste de comprimento se necessário (cautela: mantém alinhamento 1:1 por índice)
+    if len(df) != E.shape[0]:
+        m = min(len(df), E.shape[0])
+        df = df.iloc[:m].reset_index(drop=True)
+        E = E[:m, :]
+
+    return df, E
+
+@st.cache_data(show_spinner=False)
+def load_gosee() -> Tuple[pd.DataFrame, np.ndarray | None]:
+    df = _load_parquet(GOSEE_PQ_PATH)
+    if df is None or df.empty:
+        return pd.DataFrame(), None
+
+    try:
+        E = _load_npz_embeddings_strict(GOSEE_NPZ_PATH)
+    except Exception:
+        return df, None
+
+    if len(df) != E.shape[0]:
+        m = min(len(df), E.shape[0])
+        df = df.iloc[:m].reset_index(drop=True)
+        E = E[:m, :]
+    return df, E
+
+@st.cache_data(show_spinner=False)
+def load_incidents() -> Tuple[pd.DataFrame, np.ndarray | None]:
+    # History: fonte primária em JSONL; se houver Parquet, pode-se usar também.
+    df = None
+    if isinstance(INC_PQ_PATH, Path):
+        df = _load_parquet(INC_PQ_PATH)
+    if df is None or df.empty:
+        df = _load_jsonl(INC_JSONL_PATH)
+    if df is None:
+        return pd.DataFrame(), None
+
+    try:
+        E = _load_npz_embeddings_strict(INC_NPZ_PATH)
+    except Exception:
+        return df, None
+
+    if len(df) != E.shape[0]:
+        m = min(len(df), E.shape[0])
+        df = df.iloc[:m].reset_index(drop=True)
+        E = E[:m, :]
+    return df, E
+
+# ---------------- Rótulos de dicionários + Embeddings obrigatórios ----------------
+
+@st.cache_data(show_spinner=False)
+def _load_labels_any(parquet_path: Optional[Path], jsonl_path: Optional[Path]) -> pd.DataFrame:
+    df = _load_parquet(parquet_path)
+    if df is not None:
+        return df
+    df = _load_jsonl(jsonl_path)
+    if df is not None:
+        return df
+    raise FileNotFoundError(f"Rótulos não encontrados (Parquet nem JSONL): {parquet_path} / {jsonl_path}")
 
 @st.cache_data(show_spinner=False)
 def load_dicts():
     """
     Retorna: (E_ws, L_ws, E_prec, L_prec, E_cp, L_cp)
-    - E_* podem ser None (se você não tiver NPZ para WS/Prec/CP)
-    - L_* retornam DataFrame ou None (se não houver labels)
+    Nesta aplicação, os NPZ são **obrigatórios** para WS, Precursores e CP.
     """
-    # Weak Signals
-    E_ws = _load_npz_embeddings_any(WS_NPZ)
+    # WS
+    E_ws = _load_npz_embeddings_strict(WS_NPZ)
     L_ws = _load_labels_any(WS_LBL_PARQ, WS_LBL_JSONL)
 
     # Precursores
-    E_prec = _load_npz_embeddings_any(PREC_NPZ)
+    E_prec = _load_npz_embeddings_strict(PREC_NPZ)
     L_prec = _load_labels_any(PREC_LBL_PARQ, PREC_LBL_JSONL)
 
-    # CP (MAIN -> ALT)
-    E_cp = _load_npz_embeddings_any(CP_NPZ_MAIN) or _load_npz_embeddings_any(CP_NPZ_ALT)
+    # CP
+    cp_npz_path = CP_NPZ_MAIN if isinstance(CP_NPZ_MAIN, Path) else None
+    if cp_npz_path is None and isinstance(CP_NPZ_ALT, Path):
+        cp_npz_path = CP_NPZ_ALT
+    E_cp = _load_npz_embeddings_strict(cp_npz_path)
     L_cp = _load_labels_any(CP_LBL_PARQ, CP_LBL_JSONL)
 
-    # Diagnóstico enxuto
-    def _shape(x): 
-        try: 
-            return tuple(x.shape)
-        except: 
-            return None
+    # Ajustes defensivos de tamanho (se necessário)
+    def _align(E: np.ndarray, L: pd.DataFrame):
+        m = min(E.shape[0], len(L))
+        if E.shape[0] != m or len(L) != m:
+            return E[:m, :], L.iloc[:m].reset_index(drop=True)
+        return E, L
 
-    st.write({
-        "DICT_CHECK": {
-            "WS": {"E": _shape(E_ws), "L": None if L_ws is None else list(L_ws.columns)},
-            "PREC": {"E": _shape(E_prec), "L": None if L_prec is None else list(L_prec.columns)},
-            "CP": {"E": _shape(E_cp), "L": None if L_cp is None else list(L_cp.columns)},
-        }
-    })
+    E_ws, L_ws   = _align(E_ws, L_ws)
+    E_prec, L_prec = _align(E_prec, L_prec)
+    E_cp, L_cp   = _align(E_cp, L_cp)
 
     return E_ws, L_ws, E_prec, L_prec, E_cp, L_cp
-
-
-@st.cache_data(show_spinner=False)
-def load_gosee():
-    """
-    Carrega GoSee (parquet + embeddings .npz) e alinha comprimentos.
-    Retorna: (df, E) ou (None, None) se ausente.
-    """
-    df = _load_parquet(GOSEE_PQ_PATH)
-    E  = _load_npz_embeddings_any(GOSEE_NPZ_PATH)
-    if df is None or E is None:
-        return df, E
-    df = df.reset_index(drop=True)
-    n = min(len(df), getattr(E, "shape", (0, 0))[0])
-    if len(df) != n:
-        df = df.iloc[:n].reset_index(drop=True)
-    if E.shape[0] != n:
-        E = E[:n, :]
-    return df, E
-
-@st.cache_data(show_spinner=False)
-def load_incidents():
-    """
-    Carrega Relatórios/Histórico: usa embeddings .npz e texto de parquet OU jsonl.
-    Retorna: (df, E) ou (None, None) se ausente.
-    """
-    E = _load_npz_embeddings_any(INC_NPZ_PATH)
-    # aceita parquet ou jsonl (preferência pelo parquet)
-    df = _load_parquet(INC_PQ_PATH) or _load_jsonl(INC_JSONL_PATH)
-    if df is None or E is None:
-        return df, E
-    df = df.reset_index(drop=True)
-    n = min(len(df), getattr(E, "shape", (0, 0))[0])
-    if len(df) != n:
-        df = df.iloc[:n].reset_index(drop=True)
-    if E.shape[0] != n:
-        E = E[:n, :]
-    return df, E
-
-def _ensure_npz_local(npz_path: Path, url: str) -> bool:
-    try:
-        npz_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = npz_path.with_suffix(".tmp")
-        urllib.request.urlretrieve(url, tmp)
-        os.replace(tmp, npz_path)
-        return True
-    except Exception as e:
-        st.error(f"[RAG] Falha ao baixar NPZ de {url}: {e}")
-        return False
-
-@st.cache_data(show_spinner=False)
-
-@st.cache_data(show_spinner=False)
-def load_sphera():
-    """Retorna (df_sphera, E_sphera). Nunca dá NameError, sempre retorna tupla."""
-    from config import SPH_PQ_PATH, SPH_NPZ_PATH
-    import pandas as pd
-
-    df = pd.DataFrame()
-    E  = None
-
-    # Carrega parquet (se existir)
-    if isinstance(SPH_PQ_PATH, Path) and SPH_PQ_PATH.exists():
-        try:
-            df = pd.read_parquet(SPH_PQ_PATH)
-        except Exception as e:
-            st.error(f"[RAG] Falha ao ler {SPH_PQ_PATH}: {e}")
-    else:
-        st.warning(f"[RAG] Parquet Sphera inexistente: {SPH_PQ_PATH}")
-
-    # Carrega embeddings (se existir)
-    if isinstance(SPH_NPZ_PATH, Path) and SPH_NPZ_PATH.exists():
-        E = _load_npz_embeddings_any(SPH_NPZ_PATH)
-    else:
-        st.warning(f"[RAG] Embeddings Sphera inexistente: {SPH_NPZ_PATH}")
-
-    # Diagnóstico enxuto
-    st.write({
-        "RAG_CHECK": {
-            "sphera_parquet": str(SPH_PQ_PATH),
-            "sphera_npz": str(SPH_NPZ_PATH),
-            "len_df_sph": len(df) if not df.empty else 0,
-            "E_is_array": (E is not None),
-        }
-    })
-
-    return df, E
-
-
-def _load_embeddings_from_parquet(parquet_path: Path,
-                                  col_candidates=("embedding", "embeddings", "vector", "vectors", "emb")):
-    """
-    Se não houver NPZ, tenta carregar embeddings de um .parquet.
-    A coluna deve conter listas/arrays por linha. Retorna np.ndarray ou None.
-    """
-    try:
-        if parquet_path is None or not parquet_path.exists():
-            return None
-        dfp = pd.read_parquet(parquet_path)
-        for c in col_candidates:
-            if c in dfp.columns:
-                vals = dfp[c].to_list()
-                arr = np.array(vals, dtype=object)
-                # “explode” a lista de listas em 2D
-                if arr.ndim == 1:
-                    arr = np.stack(arr).astype(np.float32)
-                return arr
-        st.warning(f"[RAG] {parquet_path} não tem coluna de vetor entre {col_candidates}.")
-        return None
-    except Exception as e:
-        st.error(f"[RAG] Falha ao ler embeddings do parquet {parquet_path}: {e}")
-        return None
