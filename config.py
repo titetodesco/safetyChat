@@ -12,6 +12,9 @@ DOCS_DIR = DATA_DIR / "docs"
 # Files (keep names compatible with your repo)
 SPH_PQ_PATH = AN_DIR / "sphera.parquet"
 SPH_NPZ_PATH = AN_DIR / "sphera_embeddings.npz"
+# URL pública do NPZ (ajuste para o seu repo/branch exato)
+SPH_NPZ_URL = "https://raw.githubusercontent.com/titetodesco/safetyChat/mais/data/analytics/sphera_embeddings.npz"
+
 
 # GoSee
 GOSEE_PQ_PATH  = AN_DIR / "gosee.parquet"            # <- ajuste se seu nome for outro
