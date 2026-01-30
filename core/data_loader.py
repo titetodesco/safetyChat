@@ -7,8 +7,8 @@ import streamlit as st
 import json
 
 import urllib.request, os
-from config import SPH_NPZ_PATH, SPH_NPZ_URL
-
+#from config import SPH_NPZ_PATH, SPH_NPZ_URL
+from config import SPH_PQ_PATH, SPH_NPZ_PATH
 # import tolerante das constantes do config
 try:
     from config import (
@@ -50,19 +50,35 @@ def _load_jsonl(path: Path | None):
         return None
 
 @st.cache_data(show_spinner=False)
-def _load_npz_embeddings_any(path: Path | None):
-    if not path or not Path(path).exists():
-        return None
+def _load_npz_embeddings_any(npz_path: Path | str):
+    """Carrega embeddings de um .npz aceitando chaves comuns ('embeddings', 'E', 'arr_0').
+    Retorna np.ndarray ou None. NÃO usa `if E:` para evitar ambiguidade NumPy.
+    """
     try:
-        z = np.load(str(path), allow_pickle=True)
-        for k in ("embeddings", "E", "X", "vectors", "vecs", "arr_0"):
-            if k in z:
-                E = z[k].astype(np.float32, copy=False)
-                n = np.linalg.norm(E, axis=1, keepdims=True) + 1e-9
-                return (E / n).astype(np.float32)
-    except Exception:
+        npz_path = Path(npz_path)
+        if not npz_path.exists():
+            st.error(f"[RAG] NPZ não encontrado: {npz_path}")
+            return None
+
+        data = np.load(npz_path)
+        for key in ("embeddings", "E", "arr_0"):
+            if key in data.files:
+                E = data[key]
+                # normaliza dtype; não normaliza vetores aqui (fica para a busca)
+                if E.dtype not in (np.float32, np.float64):
+                    E = E.astype(np.float32)
+                # sanity básica de 2D
+                if E.ndim != 2:
+                    st.error(f"[RAG] Embeddings com ndim={E.ndim}, esperado 2 em {npz_path}")
+                    return None
+                return E
+
+        st.error(f"[RAG] Chaves esperadas não encontradas em {npz_path}. Encontradas: {list(data.files)}")
         return None
-    return None
+
+    except Exception as e:
+        st.error(f"[RAG] Falha ao ler NPZ {npz_path}: {e}")
+        return None
 
 
 # ---------- (1) Sphera ----------
@@ -185,25 +201,39 @@ def _ensure_npz_local(npz_path: Path, url: str) -> bool:
         return False
 
 @st.cache_data(show_spinner=False)
+
+@st.cache_data(show_spinner=False)
 def load_sphera():
-    # ... leitura do parquet como já está ...
-    # Embeddings:
+    """Carrega Sphera (parquet + npz). Sempre retorna (DataFrame, np.ndarray|None).
+    Faz checagens de alinhamento e evita NameError em caminhos de exceção.
+    """
+    df = None
     E = None
     try:
-        if not SPH_NPZ_PATH.exists():
-            st.warning(f"[RAG] NPZ não encontrado: {SPH_NPZ_PATH}. Tentando baixar…")
-            _ensure_npz_local(SPH_NPZ_PATH, SPH_NPZ_URL)
-
-        if SPH_NPZ_PATH.exists():
-            npz = np.load(SPH_NPZ_PATH)
-            E = npz.get("embeddings") or npz.get("E") or None
-            if E is None:
-                st.error(f"[RAG] NPZ sem chave 'embeddings' nem 'E': {SPH_NPZ_PATH}")
+        # Parquet
+        if Path(SPH_PQ_PATH).exists():
+            df = pd.read_parquet(SPH_PQ_PATH)
         else:
-            st.error("[RAG] NPZ ausente e não foi possível obter por download.")
-    except Exception as e:
-        st.error(f"[RAG] Falha ao ler NPZ {SPH_NPZ_PATH}: {e}")
-        E = None
+            st.error(f"[RAG] Parquet do Sphera não encontrado: {SPH_PQ_PATH}")
 
-    # (restante da sanidade/mismatch igual)
-    return df if df is not None else pd.DataFrame(), E
+        # NPZ
+        E = _load_npz_embeddings_any(SPH_NPZ_PATH)  # já lida com erros/None
+
+        # Sanidade de alinhamento
+        if df is not None and E is not None:
+            n_df = len(df)
+            n_E  = E.shape[0]
+            if n_df != n_E:
+                st.warning(f"[RAG] Desalinhamento Sphera: df={n_df} linhas, E={n_E} vetores. "
+                           f"Usando o mínimo para evitar estouro.")
+                n = min(n_df, n_E)
+                df = df.iloc[:n].reset_index(drop=True)
+                E  = E[:n, :]
+
+        # Retorno seguro (nunca levanta NameError)
+        return (df if df is not None else pd.DataFrame(), E)
+
+    except Exception as e:
+        st.error(f"[RAG] Falha no load_sphera(): {e}")
+        # Garante retorno consistente mesmo em erro
+        return (df if df is not None else pd.DataFrame(), E)
