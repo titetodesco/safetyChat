@@ -7,46 +7,49 @@ import re
 import streamlit as st
 import os
 from core.encoding import ensure_st_encoder, encode_query
+from services.embedding_client import embed_text  # <-- troque pelo seu módulo real
 
-def topk_similar(query_text: str, df: pd.DataFrame | None, E: np.ndarray | None,
-                 topk: int = 20, min_sim: float = 0.30):
-    if not query_text or df is None or not isinstance(df, pd.DataFrame) or df.empty:
+def _l2_normalize_vec(v: np.ndarray) -> np.ndarray:
+    n = np.linalg.norm(v) + 1e-12
+    return v / n
+
+def topk_similar(
+    query_text: str,
+    df_base: pd.DataFrame,
+    E_all: np.ndarray,
+    topk: int = 20,
+    min_cos: float = 0.30
+) -> List[Tuple[int, float]]:
+    """
+    Retorna lista de (rowid, score) já ordenada por score desc, filtrando por min_cos.
+    rowid é df_base['_rowid'] (posicional no E_all da base original).
+    """
+    if not query_text or df_base.empty:
         return []
-    if E is None or getattr(E, "size", 0) == 0:
-        return []
 
-    # vetor de consulta
-    import os
-    model_name = os.getenv("ST_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
-    enc = ensure_st_encoder(model_name)
-    qv = encode_query(enc, query_text)  # normalizado
+    # 1) Embedding da consulta (mesmo modelo dos NPZ!)
+    v = embed_text(query_text)  # deve retornar shape (d,)
+    v = _l2_normalize_vec(v.astype(np.float32))
 
-    # ALINHAMENTO POR POSIÇÃO
-    n = len(df)
-    if E.shape[0] < n:
-        n = E.shape[0]
-        df = df.iloc[:n].reset_index(drop=True)
-    E_view = E[:n, :]  # primeira n linhas
+    # 2) Subconjunto E pelo _rowid presente em df_base
+    if "_rowid" not in df_base.columns:
+        raise KeyError("df_base não possui coluna '_rowid'. Use load_sphera() que injeta isso.")
+    rowids = df_base["_rowid"].to_numpy(dtype=np.int64)
+    E_sub = E_all[rowids]  # shape (n_base, d) — já L2-normalizado no loader
 
-    sims = (E_view @ qv).astype(float)
-    order = np.argsort(-sims)
+    # 3) Cosine = dot(E_sub, v)
+    scores = (E_sub @ v).astype(np.float32)  # shape (n_base,)
 
-    # coluna de id
-    id_col = None
-    for cand in ("Event ID","EVENT_ID","EVENTID","id","ID"):
-        if cand in df.columns:
-            id_col = cand; break
+    # 4) Ordena e aplica limiar
+    ord_idx = np.argsort(-scores)
+    ord_idx = ord_idx[:min(topk, len(ord_idx))]
+    hits = []
+    for j in ord_idx:
+        s = float(scores[j])
+        if s >= min_cos:
+            hits.append((int(rowids[j]), s))
 
-    out = []
-    k = max(1, int(topk))
-    for i in order[:k]:
-        s = float(sims[i])
-        if s < float(min_sim):
-            continue
-        row = df.iloc[i]
-        evid = str(row.get(id_col, str(i)))
-        out.append((evid, s, row))
-    return out
+    return hits
 
 
 def get_sphera_location_col(df: pd.DataFrame | None) -> Optional[str]:
@@ -95,47 +98,3 @@ def filter_sphera(df: pd.DataFrame | None, locations: List[str], substr: str, ye
 
     # se ficou vazio, devolve base original (para não “matar” o RAG sem aviso)
     return out if not out.empty else df
-
-def topk_similar(
-    query_text: str,
-    df: pd.DataFrame | None,
-    E: np.ndarray | None,
-    topk: int = 20,
-    min_sim: float = 0.30,
-) -> List[Tuple[str, float, pd.Series]]:
-    """Top-K por cosseno usando embeddings pré-calculados (normalizados)."""
-    if not query_text or df is None or not isinstance(df, pd.DataFrame) or df.empty:
-        return []
-    if E is None or getattr(E, "size", 0) == 0:
-        return []
-
-    # usa o MESMO encoder do embedding original para vetor de consulta
-    model_name = os.getenv("ST_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
-    enc = ensure_st_encoder(model_name)
-    qv = encode_query(enc, query_text)  # normalizado
-
-    # Alinhamento posicional garantido (df e E já vêm “casados” pelo load_sphera)
-    n = min(len(df), E.shape[0])
-    if n == 0:
-        return []
-    E_view = E[:n, :]
-
-    sims = (E_view @ qv).astype(float)
-    order = np.argsort(-sims)
-
-    # coluna id
-    id_col = None
-    for cand in ("Event ID","EVENT_ID","EVENTID","id","ID"):
-        if cand in df.columns:
-            id_col = cand; break
-
-    out = []
-    k = max(1, int(topk))
-    for i in order[:k]:
-        s = float(sims[i])
-        if s < float(min_sim):
-            continue
-        row = df.iloc[i]
-        evid = str(row.get(id_col, str(i)))
-        out.append((evid, s, row))
-    return out
