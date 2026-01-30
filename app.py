@@ -21,14 +21,14 @@ from ui.sidebar import (
     render_util_buttons,
 )
 
-import os
-from config import SPH_PQ_PATH, SPH_NPZ_PATH
+import os, glob
+from config import AN_DIR, SPH_NPZ_PATH, SPH_PQ_PATH
+with st.expander("📁 Debug data/analytics (conteúdo no runtime)", expanded=True):
+    st.write("AN_DIR:", AN_DIR, "exists?", AN_DIR.exists())
+    st.write("Arquivos em data/analytics:", [os.path.basename(p) for p in glob.glob(str(AN_DIR / "*"))])
+    st.write("Parquet:", SPH_PQ_PATH.name, "exists?", SPH_PQ_PATH.exists(), "size=", os.path.getsize(SPH_PQ_PATH) if SPH_PQ_PATH.exists() else None)
+    st.write("Embeddings:", SPH_NPZ_PATH.name, "exists?", SPH_NPZ_PATH.exists())
 
-with st.expander("📁 Verificação de arquivos (Sphera)", expanded=True):
-    pq = SPH_PQ_PATH.resolve()
-    npz = SPH_NPZ_PATH.resolve()
-    st.write("Parquet:", str(pq), "existe?", pq.exists(), "tamanho:", os.path.getsize(pq) if pq.exists() else None)
-    st.write("Embeddings:", str(npz), "existe?", npz.exists(), "tamanho:", os.path.getsize(npz) if npz.exists() else None)
 
 st.set_page_config(page_title="SAFETY • CHAT", layout="wide")
 
