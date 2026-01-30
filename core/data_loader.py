@@ -28,6 +28,31 @@ from config import (
 
 # ---------------- Utilitários de IO ----------------
 
+def _l2_normalize(mat: np.ndarray) -> np.ndarray:
+    if mat is None:
+        return None
+    # evita divisão por zero
+    norms = np.linalg.norm(mat, axis=1, keepdims=True) + 1e-12
+    return mat / norms
+
+@st.cache_data(show_spinner=False)
+def _load_npz_embeddings_strict(path: Path) -> np.ndarray:
+    # Versão “estrita”: NPZ é obrigatório e deve ter chave 'embeddings' ou o único array
+    if path is None or not isinstance(path, Path):
+        raise FileNotFoundError("[RAG] Caminho NPZ inválido (None ou não-Path).")
+    if not path.exists():
+        raise FileNotFoundError(f"[RAG] NPZ não encontrado: {path}")
+    npz = np.load(path, allow_pickle=False)
+    if "embeddings" in npz.files:
+        E = npz["embeddings"]
+    else:
+        # pega o primeiro array do NPZ (padrão comum em dumps simples)
+        first_key = npz.files[0]
+        E = npz[first_key]
+    if not isinstance(E, np.ndarray) or E.ndim != 2:
+        raise ValueError(f"[RAG] Formato inesperado no NPZ: {path}")
+    return _l2_normalize(E.astype(np.float32))
+
 @st.cache_data(show_spinner=False)
 def _load_parquet(path: Optional[Path]) -> Optional[pd.DataFrame]:
     if not isinstance(path, Path):
@@ -108,24 +133,50 @@ def load_prompts_md(path: Optional[Path]) -> Optional[str]:
 # ---------------- Carregadores de Bases com Embeddings ----------------
 
 @st.cache_data(show_spinner=False)
-def load_sphera() -> Tuple[pd.DataFrame, np.ndarray | None]:
-    df = _load_parquet(SPH_PQ_PATH)
-    if df is None or df.empty:
-        df = pd.DataFrame()
-        E = None
-        return df, E
+def load_sphera() -> tuple[pd.DataFrame, np.ndarray]:
+    # 1) Carrega DF
+    if SPH_PQ_PATH is None or not isinstance(SPH_PQ_PATH, Path):
+        raise ValueError("[RAG] SPH_PQ_PATH inválido.")
+    df = pd.read_parquet(SPH_PQ_PATH)
+    # garante índice posicional
+    df = df.reset_index(drop=True)
+    # injeta coluna posicional que casa 1:1 com E
+    df["_rowid"] = np.arange(len(df), dtype=np.int32)
 
-    try:
-        E = _load_npz_embeddings_strict(SPH_NPZ_PATH)
-    except Exception as e:
-        st.error(f"[RAG] Falha ao ler NPZ {SPH_NPZ_PATH}: {e}")
-        return df, None
+    # 2) Carrega E (npz estrito) e valida shape
+    if SPH_NPZ_PATH is None or not isinstance(SPH_NPZ_PATH, Path):
+        raise ValueError("[RAG] SPH_NPZ_PATH inválido.")
+    E = _load_npz_embeddings_strict(SPH_NPZ_PATH)
 
-    # Ajuste de comprimento se necessário (cautela: mantém alinhamento 1:1 por índice)
-    if len(df) != E.shape[0]:
-        m = min(len(df), E.shape[0])
-        df = df.iloc[:m].reset_index(drop=True)
-        E = E[:m, :]
+    if E.shape[0] != len(df):
+        raise ValueError(
+            f"[RAG] Mismatch DF/Embeddings: len(df)={len(df)} vs E.shape[0]={E.shape[0]}"
+        )
+
+    # 3) Confere colunas esperadas (tolerante ao nome de LOCATION)
+    expected_desc = "Description"
+    if expected_desc not in df.columns:
+        # tenta variantes
+        for c in df.columns:
+            if c.lower() == "description":
+                df.rename(columns={c: "Description"}, inplace=True)
+                break
+        if "Description" not in df.columns:
+            raise KeyError("[RAG] Coluna 'Description' não encontrada no Sphera.")
+
+    # 4) Location tolerante
+    loc_candidates = ["LOCATION", "Location", "local", "Local", "Área", "Area"]
+    loc_col = None
+    for c in loc_candidates:
+        if c in df.columns:
+            loc_col = c
+            break
+    if loc_col is None:
+        # tudo bem, seguimos sem LOCATION
+        df["LOCATION"] = ""
+    else:
+        if loc_col != "LOCATION":
+            df.rename(columns={loc_col: "LOCATION"}, inplace=True)
 
     return df, E
 
