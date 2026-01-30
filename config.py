@@ -28,8 +28,8 @@ INC_NPZ_PATH  = AN_DIR / "history_embeddings.npz"
 INC_PQ_PATH   = None                         # não há parquet
 INC_JSONL_PATH= AN_DIR / "history_texts.jsonl"
 
-PROMPTS_MD_PATH = DATA_DIR / "prompts" / "prompts.md"
-DATASETS_CONTEXT_PATH = DOCS_DIR / "datasets_context.md"
+PROMPTS_MD_PATH = DOCS_DIR / "prompts" / "prompts.md"
+DATASETS_CONTEXT_PATH = DATA_DIR / "datasets_context.md"
 
 # Dictionaries (PT by default)
 WS_NPZ        = AN_DIR / "ws_embeddings_pt.npz"        # ou *_en.npz
