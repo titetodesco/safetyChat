@@ -21,8 +21,14 @@ from ui.sidebar import (
     render_util_buttons,
 )
 
-
 st.set_page_config(page_title="SAFETY • CHAT", layout="wide")
+
+
+st.write("config carregado de:", config.__file__)
+st.write("SPH_PQ_PATH:", str(config.SPH_PQ_PATH), isinstance(config.SPH_PQ_PATH, Path), config.SPH_PQ_PATH.exists())
+st.write("SPH_NPZ_PATH:", str(config.SPH_NPZ_PATH), isinstance(config.SPH_NPZ_PATH, Path), config.SPH_NPZ_PATH.exists())
+
+
 
 # Se você também monta um 'sphera_context_md' e 'dic_matches_md':
 try:
