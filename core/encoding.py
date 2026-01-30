@@ -1,26 +1,38 @@
-
+# core/encoding.py
 from __future__ import annotations
+from typing import Optional
 import numpy as np
-import streamlit as st
 
-@st.cache_resource(show_spinner=False)
+# Carregador global com cache leve (evita rebaixar o modelo toda hora)
+_ENCODER = None
+_ENCODER_NAME: Optional[str] = None
+
 def ensure_st_encoder(model_name: str):
+    """
+    Garante um SentenceTransformer carregado com o nome informado.
+    Reusa o mesmo encoder se o nome não mudar.
+    """
+    global _ENCODER, _ENCODER_NAME
+    if _ENCODER is not None and _ENCODER_NAME == model_name:
+        return _ENCODER
+
     from sentence_transformers import SentenceTransformer
-    return SentenceTransformer(model_name)
+    _ENCODER = SentenceTransformer(model_name)
+    _ENCODER_NAME = model_name
+    return _ENCODER
 
-def _l2norm(X: np.ndarray) -> np.ndarray:
-    n = np.linalg.norm(X, axis=1, keepdims=True) + 1e-9
-    return X / n
-
-def encode_texts(encoder, texts, batch_size=64):
-    import numpy as np
-    if not texts:
-        return np.zeros((0, encoder.get_sentence_embedding_dimension()), dtype=np.float32)
-    vecs = encoder.encode(list(texts), batch_size=batch_size, show_progress_bar=False)
-    return _l2norm(np.asarray(vecs, dtype=np.float32))
-
-def encode_query(encoder, text: str):
-    import numpy as np
-    v = encoder.encode([text], show_progress_bar=False)[0].astype(np.float32)
-    n = (np.linalg.norm(v) + 1e-9)
-    return (v / n).astype(np.float32)
+def encode_query(text: str, encoder) -> np.ndarray:
+    """
+    Codifica um único texto -> vetor numpy (1D).
+    **Sem** show_progress_bar (compatível com versões antigas).
+    """
+    if not text:
+        return np.zeros((384,), dtype="float32")  # fallback seguro; ajuste o dim se necessário
+    # Retorna um vetor 1D
+    vec = encoder.encode(
+        [text],
+        convert_to_numpy=True,
+        normalize_embeddings=False,  # normalizamos no consumidor (sphera.py)
+        # NÃO passe show_progress_bar aqui
+    )[0]
+    return vec
