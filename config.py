@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 # Base folders
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 AN_DIR   = DATA_DIR / "analytics"
 XLSX_DIR = DATA_DIR / "xlsx"
