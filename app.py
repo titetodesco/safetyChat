@@ -10,7 +10,18 @@ from core.data_loader import (
     load_sphera, load_gosee, load_incidents,
     load_datasets_context, load_prompts_md, load_dicts,
 )
-from core.sphera import filter_sphera, get_sphera_location_col, topk_similar
+try:
+    from services.upload_extract import extract_any
+except Exception:
+    try:
+        from service.upload_extract import extract_any  # fallback
+    except Exception:
+        extract_any = None  # desabilita upload-extract se não existir
+try:
+    from services.llm_client import chat
+except Exception:
+    from service.llm_client import chat  # se estiver no singular
+
 from core.context_builder import (
     hits_dataframe, build_dic_matches_md, build_sphera_context_md
 )
