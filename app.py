@@ -20,9 +20,11 @@ from ui.sidebar import (
     render_aggregation_controls,
     render_util_buttons,
 )
+
+st.set_page_config(page_title="SAFETY • CHAT", layout="wide")
+
 st.sidebar.caption(f"sphera.parquet: {SPH_PQ_PATH.exists()}  |  sphera_embeddings.npz: {SPH_NPZ_PATH.exists()}")
 st.sidebar.caption(f"prompts.md: {PROMPTS_MD_PATH.exists()}")
-st.set_page_config(page_title="SAFETY • CHAT", layout="wide")
 
 # --------------------- estado base (sempre antes dos widgets) ---------------------
 if "draft_prompt" not in st.session_state:
