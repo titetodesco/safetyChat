@@ -21,14 +21,6 @@ from ui.sidebar import (
     render_util_buttons,
 )
 
-'''import os, glob
-from config import AN_DIR, SPH_NPZ_PATH, SPH_PQ_PATH
-with st.expander("📁 Debug data/analytics (conteúdo no runtime)", expanded=True):
-    st.write("AN_DIR:", AN_DIR, "exists?", AN_DIR.exists())
-    st.write("Arquivos em data/analytics:", [os.path.basename(p) for p in glob.glob(str(AN_DIR / "*"))])
-    st.write("Parquet:", SPH_PQ_PATH.name, "exists?", SPH_PQ_PATH.exists(), "size=", os.path.getsize(SPH_PQ_PATH) if SPH_PQ_PATH.exists() else None)
-    st.write("Embeddings:", SPH_NPZ_PATH.name, "exists?", SPH_NPZ_PATH.exists()) '''
-
 
 st.set_page_config(page_title="SAFETY • CHAT", layout="wide")
 
