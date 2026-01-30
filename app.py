@@ -23,6 +23,15 @@ from ui.sidebar import (
 
 st.set_page_config(page_title="SAFETY • CHAT", layout="wide")
 
+import config as _cfg
+st.info(f"CONFIG EM USO: {_cfg.__file__}")
+st.write({
+    "CONFIG_CHECK": {
+        "SPH_PQ_PATH": repr(_cfg.SPH_PQ_PATH),
+        "SPH_NPZ_PATH": repr(_cfg.SPH_NPZ_PATH),
+    }
+})
+
 
 st.write("config carregado de:", config.__file__)
 st.write("SPH_PQ_PATH:", str(config.SPH_PQ_PATH), isinstance(config.SPH_PQ_PATH, Path), config.SPH_PQ_PATH.exists())
