@@ -1,28 +1,36 @@
 # core/sphera.py
 from __future__ import annotations
-from typing import List, Tuple, Optional
+from typing import List, Optional
 import numpy as np
 import pandas as pd
 import streamlit as st
 
+# ---------------------------------------------------------------------
+# Pega o nome do modelo de embeddings do seu config (com fallback)
+# ---------------------------------------------------------------------
+try:
+    # comum no seu projeto
+    from config import OLLAMA_EMBEDDING_MODEL as EMBED_MODEL_NAME
+except Exception:
+    try:
+        from config import EMBEDDING_MODEL as EMBED_MODEL_NAME  # fallback alternativo
+    except Exception:
+        EMBED_MODEL_NAME = "all-MiniLM-L6-v2"  # fallback seguro
+
 from core.encoding import ensure_st_encoder, encode_query
 
 
-# --------------------------- Utilidades internas -----------------------------
+# ============================ Utils internas ============================
 
 def _l2_normalize_vec(v: np.ndarray) -> np.ndarray:
     n = float(np.linalg.norm(v)) + 1e-12
     return v / n
 
 def _l2_normalize_mat(M: np.ndarray) -> np.ndarray:
-    # Normaliza linhas de M (n amostras x dim)
     norms = np.linalg.norm(M, axis=1, keepdims=True) + 1e-12
     return M / norms
 
 def _cosine_query_vs_matrix(q: np.ndarray, E: np.ndarray) -> np.ndarray:
-    """
-    Retorna array 1D com as similaridades cos entre q e cada linha de E.
-    """
     if q.ndim != 1:
         q = q.reshape(-1)
     qn = _l2_normalize_vec(q)
@@ -30,16 +38,12 @@ def _cosine_query_vs_matrix(q: np.ndarray, E: np.ndarray) -> np.ndarray:
     return En @ qn
 
 
-# --------------------------- API pública (usada pelo app) --------------------
+# ========================= API usada no app =============================
 
 def get_sphera_location_col(df: pd.DataFrame) -> Optional[str]:
-    """
-    Detecta a coluna de local (LOCATION/Location/Local/Area/Instalação...).
-    """
     if df is None or df.empty:
         return None
-    candidates = ["LOCATION", "Location", "local", "Local", "Area", "Instalação"]
-    for c in candidates:
+    for c in ["LOCATION", "Location", "local", "Local", "Area", "Instalação"]:
         if c in df.columns:
             return c
     return None
@@ -51,27 +55,22 @@ def filter_sphera(
     substr: str | None,
     years: int | None
 ) -> pd.DataFrame:
-    """
-    Aplica filtros (location, substring em Description, janela de anos)
-    e retorna o DF filtrado, preservando o alinhamento via coluna `_rowid`.
-    """
     if df is None or df.empty:
         return df
 
     out = df
 
-    # Filtro por locations (se existir coluna de local)
+    # filtro por local
     loc_col = get_sphera_location_col(out)
     if locations and loc_col and loc_col in out.columns:
         out = out[out[loc_col].astype(str).isin(locations)]
 
-    # Filtro por substring em Description
-    if substr:
-        if "Description" in out.columns:
-            mask = out["Description"].astype(str).str.contains(substr, case=False, na=False)
-            out = out[mask]
+    # filtro por substring em Description
+    if substr and "Description" in out.columns:
+        mask = out["Description"].astype(str).str.contains(substr, case=False, na=False)
+        out = out[mask]
 
-    # Filtro por últimos N anos (heurística — ajuste para o seu esquema real)
+    # filtro por últimos N anos (heurística)
     if years and years > 0:
         year_col = None
         for c in ["year", "Year", "Ano", "ano", "EventYear"]:
@@ -93,61 +92,64 @@ def filter_sphera(
 def topk_similar(
     query_text: str,
     df_base: pd.DataFrame,
-    E_all: Optional[np.ndarray],
+    E_all: np.ndarray | None,
     *,
     topk: int = 20,
     min_sim: float = 0.30,
     text_col: str = "Description",
-) -> List[dict]:
+):
     """
-    Calcula top-k mais similares ao `query_text` dentro de `df_base`,
-    usando a matriz de embeddings `E_all` (alinhada ao DF original via `_rowid`).
-
-    Retorna lista de dicts:
-      - "idx": índice original (_rowid) da linha
-      - "cos": similaridade cosseno
-      - "row": a linha do df_base (pd.Series)
+    Retorna lista de dicts com:
+      - idx: _rowid original
+      - cos: similaridade
+      - row: linha (pd.Series)
     """
-    # Sanidade
+    # sanity checks
     if not query_text or not query_text.strip():
         return []
     if df_base is None or df_base.empty:
         return []
     if E_all is None or not isinstance(E_all, np.ndarray) or E_all.size == 0:
         return []
-
     if "_rowid" not in df_base.columns:
-        st.warning("Base filtrada não possui coluna `_rowid`. Não é possível alinhar com embeddings.")
+        st.warning("Base filtrada não possui coluna `_rowid` para alinhar com embeddings.")
         return []
 
     rowids = df_base["_rowid"].astype(int).to_numpy()
-    if len(rowids) == 0:
+    if rowids.size == 0:
         return []
-
-    max_id = int(rowids.max())
-    if max_id >= E_all.shape[0]:
+    if int(rowids.max()) >= E_all.shape[0]:
         st.error("Há _rowid fora do intervalo da matriz de embeddings. Verifique o alinhamento DF <-> embeddings.")
         return []
 
-    # Subconjunto de embeddings
+    # subset de embeddings pela indexação original
     E_subset = E_all[rowids, :]
 
-    # Embedding da consulta com o seu encoder padrão
+    # >>>>>>>>>>>>>>>>> CORREÇÃO AQUI <<<<<<<<<<<<<<<<<
+    # cria/recupera encoder com o nome do modelo definido no config
     try:
-        encoder = ensure_st_encoder()
-        q = encode_query(query_text, encoder)  # 1D np.ndarray
+        encoder = ensure_st_encoder(model_name=EMBED_MODEL_NAME)
+    except TypeError:
+        # compat para versões antigas: se a assinatura não aceitar kwarg
+        encoder = ensure_st_encoder(EMBED_MODEL_NAME)
+    except Exception as ex:
+        st.error(f"Falha ao inicializar o encoder '{EMBED_MODEL_NAME}': {ex}")
+        return []
+
+    # embedding da consulta
+    try:
+        q = encode_query(query_text, encoder)
     except Exception as ex:
         st.error(f"Falha ao gerar embedding da consulta: {ex}")
         return []
 
-    # Similaridades (cos)
+    # similaridades
     try:
-        sims = _cosine_query_vs_matrix(q, E_subset)  # shape (n,)
+        sims = _cosine_query_vs_matrix(q, E_subset)
     except Exception as ex:
         st.error(f"Falha ao calcular similaridades: {ex}")
         return []
 
-    # Ordena por similaridade desc e aplica limiar
     order = np.argsort(-sims)
     hits = []
     for pos in order:
