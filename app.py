@@ -33,12 +33,6 @@ st.write({
 })
 
 
-st.write("config carregado de:", config.__file__)
-st.write("SPH_PQ_PATH:", str(config.SPH_PQ_PATH), isinstance(config.SPH_PQ_PATH, Path), config.SPH_PQ_PATH.exists())
-st.write("SPH_NPZ_PATH:", str(config.SPH_NPZ_PATH), isinstance(config.SPH_NPZ_PATH, Path), config.SPH_NPZ_PATH.exists())
-
-
-
 # Se você também monta um 'sphera_context_md' e 'dic_matches_md':
 try:
     from core.context_builder import build_sphera_context_md, build_dic_matches_md
