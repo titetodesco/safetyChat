@@ -66,8 +66,8 @@ def _load_npz_embeddings_any(path: Path | None):
 
 
 # ---------- (1) Sphera ----------
-@st.cache_data(show_spinner=False)
-'''def load_sphera():
+'''@st.cache_data(show_spinner=False)
+def load_sphera():
     """Carrega Sphera (parquet + embeddings .npz) e alinha os comprimentos."""
     df = _load_parquet(SPH_PQ_PATH)
     E  = _load_npz_embeddings_any(SPH_NPZ_PATH)
