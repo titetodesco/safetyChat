@@ -32,11 +32,6 @@ with st.expander("📁 Debug data/analytics (conteúdo no runtime)", expanded=Tr
 
 st.set_page_config(page_title="SAFETY • CHAT", layout="wide")
 
-with st.expander("🧠 Debug contexto para o LLM", expanded=True):
-    st.write("len(datasets_ctx) =", len(datasets_ctx or ""))
-    preview_ctx = (datasets_ctx or "")[:500]
-    st.code(preview_ctx if preview_ctx else "(vazio)")
-
     # Se você também monta um 'sphera_context_md' e 'dic_matches_md':
     try:
         from core.context_builder import build_sphera_context_md, build_dic_matches_md
