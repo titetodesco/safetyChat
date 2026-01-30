@@ -39,61 +39,64 @@ def _to_path(p):
     return None
 
 @st.cache_data(show_spinner=False)
-def _load_parquet(path: Path | None):
-    if not path or not Path(path).exists():
+def _load_parquet(p):
+    p = _coerce_path(p)
+    if p is None or not p.exists():
         return None
+    import pandas as pd
     try:
-        return pd.read_parquet(path)
-    except Exception:
+        return pd.read_parquet(p)
+    except Exception as e:
+        st.error(f"[RAG] Falha ao ler parquet {p}: {e}")
         return None
 
 @st.cache_data(show_spinner=False)
-def _load_jsonl(path: Path | None):
-    if not path or not Path(path).exists():
+def _load_jsonl(p):
+    p = _coerce_path(p)
+    if p is None or not p.exists():
         return None
+    import pandas as pd, json
     try:
-        rows = [json.loads(x) for x in Path(path).read_text(encoding="utf-8").splitlines() if x.strip()]
+        rows = []
+        with open(p, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                rows.append(json.loads(line))
         return pd.DataFrame(rows)
-    except Exception:
+    except Exception as e:
+        st.error(f"[RAG] Falha ao ler jsonl {p}: {e}")
         return None
 
 @st.cache_data(show_spinner=False)
-def _load_npz_embeddings_any(path: Path | None):
-    """Carrega um .npz de embeddings. Retorna ndarray ou None.
-    Aceita formatos com chave 'arr_0' (np.savez) ou nomeadas."""
-    if not path or not isinstance(path, Path):
-        st.warning("[RAG] Caminho NPZ inválido (None ou não-Path).")
+def _load_npz_embeddings_any(path):
+    import numpy as np
+    path = _coerce_path(path)
+    if path is None:
+        # silencia: pode ser normal não ter NPZ para WS/PREC
         return None
     if not path.exists():
         st.warning(f"[RAG] NPZ não encontrado: {path}")
         return None
-
-    import numpy as np
     try:
-        data = np.load(path, allow_pickle=False)
-        # tenta algumas chaves comuns
+        f = np.load(path, allow_pickle=False)
         for key in ("arr_0", "embeddings", "E", "data"):
-            if key in data:
-                arr = data[key]
-                try:
-                    return np.array(arr, dtype=float)
-                except Exception:
-                    return np.array(arr)
-        # se vier múltiplas chaves, tenta a primeira que seja 2D
-        for key in data.files:
-            arr = data[key]
-            try:
-                arr_np = np.array(arr, dtype=float)
-            except Exception:
-                arr_np = np.array(arr)
-            if arr_np.ndim >= 2:
-                return arr_np
-        # último recurso: retorna o primeiro array que encontrar
-        first_key = data.files[0] if data.files else None
-        return np.array(data[first_key]) if first_key else None
+            if key in f:
+                return np.array(f[key], dtype=float, copy=False)
+        # senão, pega a 1ª 2D
+        for key in f.files:
+            arr = np.array(f[key], copy=False)
+            if arr.ndim >= 2:
+                return arr.astype(float, copy=False)
+        if f.files:
+            return np.array(f[f.files[0]], dtype=float, copy=False)
+        st.error(f"[RAG] NPZ sem arrays utilizáveis: {path}")
+        return None
     except Exception as e:
         st.error(f"[RAG] Falha ao ler NPZ {path}: {e}")
         return None
+
 
 @st.cache_data(show_spinner=False)
 def load_prompts_md(path: str | Path | None = None) -> str:
@@ -155,31 +158,39 @@ def _load_labels_any(parquet_path: Path | None, jsonl_path: Path | None):
 @st.cache_data(show_spinner=False)
 def load_dicts():
     """
-    Retorna (E_ws, L_ws, E_prec, L_prec, E_cp, L_cp).
-
-    Estratégia:
-      - Embeddings: tenta NPZ; se None, tenta PARQUET (colunas embedding/vector/...).
-      - Labels: PARQUET -> JSONL. Nunca usa 'or' entre DataFrames.
+    Retorna: (E_ws, L_ws, E_prec, L_prec, E_cp, L_cp)
+    - E_* podem ser None (se você não tiver NPZ para WS/Prec/CP)
+    - L_* retornam DataFrame ou None (se não houver labels)
     """
-    # WS
+    # Weak Signals
     E_ws = _load_npz_embeddings_any(WS_NPZ)
-    if E_ws is None and WS_PARQ is not None:
-        E_ws = _load_embeddings_from_parquet(WS_PARQ)
     L_ws = _load_labels_any(WS_LBL_PARQ, WS_LBL_JSONL)
 
-    # PRECURSORES
+    # Precursores
     E_prec = _load_npz_embeddings_any(PREC_NPZ)
-    if E_prec is None and PREC_PARQ is not None:
-        E_prec = _load_embeddings_from_parquet(PREC_PARQ)
     L_prec = _load_labels_any(PREC_LBL_PARQ, PREC_LBL_JSONL)
 
-    # CP
-    E_cp = _load_npz_embeddings_any(CP_NPZ_MAIN)
-    if E_cp is None:
-        E_cp = _load_npz_embeddings_any(CP_NPZ_ALT)
+    # CP (MAIN -> ALT)
+    E_cp = _load_npz_embeddings_any(CP_NPZ_MAIN) or _load_npz_embeddings_any(CP_NPZ_ALT)
     L_cp = _load_labels_any(CP_LBL_PARQ, CP_LBL_JSONL)
 
-    return (E_ws, L_ws, E_prec, L_prec, E_cp, L_cp)
+    # Diagnóstico enxuto
+    def _shape(x): 
+        try: 
+            return tuple(x.shape)
+        except: 
+            return None
+
+    st.write({
+        "DICT_CHECK": {
+            "WS": {"E": _shape(E_ws), "L": None if L_ws is None else list(L_ws.columns)},
+            "PREC": {"E": _shape(E_prec), "L": None if L_prec is None else list(L_prec.columns)},
+            "CP": {"E": _shape(E_cp), "L": None if L_cp is None else list(L_cp.columns)},
+        }
+    })
+
+    return E_ws, L_ws, E_prec, L_prec, E_cp, L_cp
+
 
 @st.cache_data(show_spinner=False)
 def load_gosee():
