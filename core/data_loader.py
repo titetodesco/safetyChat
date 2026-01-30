@@ -214,39 +214,48 @@ def _ensure_npz_local(npz_path: Path, url: str) -> bool:
 
 @st.cache_data(show_spinner=False)
 def load_sphera():
-    """Carrega Sphera (parquet + npz). Sempre retorna (DataFrame, np.ndarray|None).
-    Faz checagens de alinhamento e evita NameError em caminhos de exceção.
     """
-    df = None
+    Carrega a base Sphera e seus embeddings.
+    - df: lido de SPH_PQ_PATH (parquet). Se ausente/erro -> DataFrame vazio.
+    - E:  lido de SPH_NPZ_PATH (npz). Se ausente/erro -> None.
+    Nunca usa checagem booleana sobre DataFrame/ndarray.
+    """
+    # -------- DF --------
+    df = pd.DataFrame()
+    try:
+        if SPH_PQ_PATH is None or not isinstance(SPH_PQ_PATH, Path):
+            st.error("[RAG] SPH_PQ_PATH é None ou não é Path. Confira config.py.")
+        elif not SPH_PQ_PATH.exists():
+            st.error(f"[RAG] Parquet inexistente: {SPH_PQ_PATH}")
+        else:
+            df = pd.read_parquet(SPH_PQ_PATH)
+    except Exception as e:
+        st.error(f"[RAG] Falha ao ler parquet {SPH_PQ_PATH}: {e}")
+        df = pd.DataFrame()
+
+    # -------- Embeddings --------
     E = None
     try:
-        # Parquet
-        if Path(SPH_PQ_PATH).exists():
-            df = pd.read_parquet(SPH_PQ_PATH)
+        if SPH_NPZ_PATH is None or not isinstance(SPH_NPZ_PATH, Path):
+            st.error("[RAG] SPH_NPZ_PATH é None ou não é Path. Confira config.py.")
+        elif not SPH_NPZ_PATH.exists():
+            st.error(f"[RAG] NPZ inexistente: {SPH_NPZ_PATH}")
         else:
-            st.error(f"[RAG] Parquet do Sphera não encontrado: {SPH_PQ_PATH}")
-
-        # NPZ
-        E = _load_npz_embeddings_any(SPH_NPZ_PATH)  # já lida com erros/None
-
-        # Sanidade de alinhamento
-        if df is not None and E is not None:
-            n_df = len(df)
-            n_E  = E.shape[0]
-            if n_df != n_E:
-                st.warning(f"[RAG] Desalinhamento Sphera: df={n_df} linhas, E={n_E} vetores. "
-                           f"Usando o mínimo para evitar estouro.")
-                n = min(n_df, n_E)
-                df = df.iloc[:n].reset_index(drop=True)
-                E  = E[:n, :]
-
-        # Retorno seguro (nunca levanta NameError)
-        return (df if df is not None else pd.DataFrame(), E)
-
+            npz = np.load(SPH_NPZ_PATH, allow_pickle=True)
+            for key in ("embeddings", "E", "vectors", "arr_0"):
+                if key in npz.files:
+                    arr = npz[key]
+                    if arr is not None and arr.ndim == 1:
+                        arr = np.stack(arr)
+                    E = arr.astype(np.float32, copy=False)
+                    break
+            if E is None:
+                st.error(f"[RAG] {SPH_NPZ_PATH} não contém chave de embeddings conhecida.")
     except Exception as e:
-        st.error(f"[RAG] Falha no load_sphera(): {e}")
-        # Garante retorno consistente mesmo em erro
-        return (df if df is not None else pd.DataFrame(), E)
+        st.error(f"[RAG] Falha ao ler NPZ {SPH_NPZ_PATH}: {e}")
+        E = None
+
+    return df, E
 
 def _load_embeddings_from_parquet(parquet_path: Path,
                                   col_candidates=("embedding", "embeddings", "vector", "vectors", "emb")):
