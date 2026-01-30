@@ -2,151 +2,184 @@ from __future__ import annotations
 import streamlit as st
 import pandas as pd
 
-from ui.sidebar import (
-    render_prompts_selector, render_retrieval_controls, render_advanced_filters,
-    render_aggregation_controls, render_util_buttons,
+# --- Config e serviços
+from config import DATASETS_CONTEXT_PATH, PROMPTS_MD_PATH
+from core.data_loader import (
+    load_sphera, load_prompts_md, load_datasets_context, load_dicts,
 )
-from ui.main import render_main
-
 from core.sphera import filter_sphera, get_sphera_location_col, topk_similar
+from core.context_builder import hits_dataframe, build_dic_matches_md, build_sphera_context_md
 from core.dictionaries import aggregate_dict_matches_over_hits
-from core.context_builder import (
-    hits_dataframe, build_dic_matches_md, build_sphera_context_md,
-    build_gosee_context_md, build_investigation_context_md,   # <- importe os novos
-)
-from core.data_loader import load_dicts
+from services.upload_extract import extract_any
 from services.llm_client import chat
-from ui.tables import show_debug_raw  # <- import absoluto (evita erro de import)
-from core.data_loader import load_gosee, load_incidents
-from core.sphera import topk_similar  # já existente
 
-# Carrega as outras bases
-df_gosee, E_gosee = load_gosee()
-df_inc, E_inc = load_incidents()
-if df_inc is not None and E_inc is not None:
-    hits_inc = topk_similar(user_input, df_inc, E_inc, topk=k_sph, min_sim=thr_sph)
-    ctx_lines.append(build_investigation_context_md(hits_inc))
+# --- Sidebar (SEM assistente de prompts)
+from ui.sidebar import (
+    render_retrieval_controls,
+    render_advanced_filters,
+    render_aggregation_controls,
+    render_util_buttons,
+)
 
+import os
+from config import SPH_PQ_PATH, SPH_NPZ_PATH
 
-st.set_page_config(page_title="SAFETY  CHAT ", layout="wide")
+with st.expander("📁 Verificação de arquivos (Sphera)", expanded=True):
+    pq = SPH_PQ_PATH.resolve()
+    npz = SPH_NPZ_PATH.resolve()
+    st.write("Parquet:", str(pq), "existe?", pq.exists(), "tamanho:", os.path.getsize(pq) if pq.exists() else None)
+    st.write("Embeddings:", str(npz), "existe?", npz.exists(), "tamanho:", os.path.getsize(npz) if npz.exists() else None)
 
-# Recupera similares (sem filtros avançados, a menos que você deseje algum específico)
-hits_gosee = topk_similar(user_input, df_gosee, E_gosee, topk=k_sph, min_sim=thr_sph) if E_gosee is not None else []
-hits_inc   = topk_similar(user_input, df_inc,   E_inc,   topk=k_sph, min_sim=thr_sph) if E_inc   is not None else []
+st.set_page_config(page_title="SAFETY • CHAT", layout="wide")
 
-go_btn, user_text, df_sph, E_sph, datasets_ctx, prompts_md, upl_texts = render_main()
+# --------------------- Estado base (sempre antes dos widgets) ---------------------
+ss = st.session_state
+ss.setdefault("draft_prompt", "")
+ss.setdefault("chat", [])
+ss.setdefault("upld_texts", [])
 
-# 🔹 Sempre inicialize o estado ANTES dos widgets
-if "draft_prompt" not in st.session_state:
-    st.session_state["draft_prompt"] = ""
+# --------------------- Carregamentos (dados, contexto) ---------------------------
+datasets_ctx = load_datasets_context(DATASETS_CONTEXT_PATH) or ""
+# (prompts_md carregado mas não usado; mantemos para compatibilidade com funções futuras)
+_ = load_prompts_md(PROMPTS_MD_PATH)
 
-# 🔹 No handler do botão "Carregar no rascunho"
-#sel_text, sel_upl, load_to_draft = render_prompts_selector(prompts_bank=prompts_md, key_prefix="sb_")
-#if load_to_draft:
-#    base = (st.session_state.get("draft_prompt") or "").strip()
-#    parts = [base]
-#    if sel_text: parts.append(str(sel_text))
-#    if sel_upl:  parts.append(str(sel_upl))
-#    st.session_state["draft_prompt"] = "\n\n".join([p for p in parts if p]).strip()
-#    st.rerun()
+df_sph, E_sph = load_sphera()  # depende do config.py correto!
 
-PROMPT_ASSISTANT_ENABLED = False  # (ou True quando quiser reativar)
-if PROMPT_ASSISTANT_ENABLED:
-    sel_text, sel_upl, load_to_draft = render_prompts_selector(prompts_bank=prompts_md, key_prefix="sb_")
-    if load_to_draft:
-        base = (st.session_state.get("draft_prompt") or "").strip()
-        parts = [base]
-        if sel_text: parts.append(sel_text)
-        if sel_upl:  parts.append(sel_upl)
-        st.session_state["draft_prompt"] = "\n\n".join([p for p in parts if p]).strip()
-        st.rerun()
+# --------------------- SIDEBAR (parâmetros) --------------------------------------
+with st.sidebar:
+    st.caption("Parâmetros RAG e utilitários")
 
 k_sph, thr_sph, years = render_retrieval_controls()
-locations, substr, loc_col, loc_opts = render_advanced_filters(df_sph)
-(agg_mode, per_event_thr, support_min, thr_ws, thr_prec, thr_cp, top_ws, top_prec, top_cp) = render_aggregation_controls()
-clear_upl, clear_chat = render_util_buttons()
+locations, substr, loc_col_guess, loc_options = render_advanced_filters(df_sph)
+(agg_mode, per_event_thr, support_min, thr_ws, thr_prec, thr_cp,
+ top_ws, top_prec, top_cp) = render_aggregation_controls()
+clear_upl, clear_chat_btn = render_util_buttons()
 
-# Carregar no rascunho (concatenar com segurança)
-sel_text, sel_upl, load_to_draft = render_prompts_selector(prompts_bank=prompts_md)
-if load_to_draft:
-    base = (st.session_state.get("draft_prompt") or "").strip()
-    parts = [base]
-    if sel_text: parts.append(str(sel_text).strip())
-    if sel_upl:  parts.append(str(sel_upl).strip())
-    st.session_state["draft_prompt"] = "\n".join([p for p in parts if p]).strip()
+# Ações utilitárias
+if clear_upl:
+    ss["upld_texts"] = []
+    st.success("Uploads limpos.")
+if clear_chat_btn:
+    ss["chat"] = []
+    st.success("Chat limpo.")
+
+# --------------------- UI principal (centro) --------------------------------------
+st.title("SAFETY • CHAT")
+
+draft = st.text_area("Conteúdo do prompt", key="draft_prompt", height=220)
+
+txt_for_sph = st.text_area(
+    "Texto de análise (para Sphera)",
+    placeholder="Descreva o cenário...", height=180, key="analysis_text"
+)
+
+upl = st.file_uploader(
+    "Anexar arquivo (opcional)",
+    type=["pdf", "docx", "xlsx", "txt", "md", "csv"],
+    accept_multiple_files=True, key="uploader_any"
+)
+
+col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1])
+go_btn       = col_btn1.button("Enviar para o chat", use_container_width=True, key="btn_go")
+clear_draft  = col_btn2.button("Limpar rascunho", use_container_width=True, key="btn_clear_draft")
+clear_chat   = col_btn3.button("Limpar chat", use_container_width=True, key="btn_clear_chat_msg")
+
+if clear_draft:
+    ss["draft_prompt"] = ""
+    st.rerun()
+if clear_chat:
+    ss["chat"] = []
     st.rerun()
 
-k_sph, thr_sph, years = render_retrieval_controls()
-locations, substr, loc_col, loc_opts = render_advanced_filters(df_sph)
-(agg_mode, per_event_thr, support_min, thr_ws, thr_prec, thr_cp, top_ws, top_prec, top_cp) = render_aggregation_controls()
-clear_upl, clear_chat_btn = render_util_buttons()
-if clear_upl:
-    st.session_state.upld_texts = []
-if clear_chat_btn:
-    st.session_state.chat = []
+# Extrair textos de uploads (se houver)
+if upl:
+    extracted = []
+    for f in upl:
+        try:
+            text = extract_any(f)
+            if text:
+                extracted.append(text)
+        except Exception as e:
+            st.warning(f"Falha ao extrair de {getattr(f,'name','(arquivo)')}: {e}")
+    ss["upld_texts"] = extracted
 
-# Only run when user clicks
+# --------------------- Execução (ao clicar) ---------------------------------------
 if go_btn:
-    user_input = (user_text or st.session_state.get("draft_prompt") or "").strip()
-    if not user_input:
-        st.warning("Escreva algo no 'Conteúdo do prompt' ou em 'Texto de análise (para Sphera)' antes de enviar.")
-        st.stop()
+    user_input = (ss.get("draft_prompt") or "").strip()
 
-    # 1) Recuperação Sphera
+    # 1) Recuperação Sphera (RAG)
+    loc_col_eff = get_sphera_location_col(df_sph) if isinstance(df_sph, pd.DataFrame) else None
     df_base = filter_sphera(df_sph, locations, substr, years)
-    hits = topk_similar(user_input, df_base, E_sph, k_sph, thr_sph)
-    loc_col_effective = get_sphera_location_col(df_base or df_sph)
 
-    with st.expander("🔧 Diagnóstico RAG", expanded=False):
-        st.write({
-            "len(df_sph)": 0 if df_sph is None else len(df_sph),
-            "len(df_base)": 0 if (df_base is None) else len(df_base),
-            "E_sph.shape": None if E_sph is None else tuple(E_sph.shape),
+    hits = []
+    if isinstance(df_base, pd.DataFrame) and E_sph is not None and user_input:
+        # Importante: topk_similar usa o MESMO encoder dos embeddings pré-calculados
+        hits = topk_similar(user_input, df_base, E_sph, topk=k_sph, min_sim=thr_sph)
+
+    with st.expander("🛠️ Diagnóstico RAG", expanded=True):
+        st.json({
+            "len(df_sph)": len(df_sph) if isinstance(df_sph, pd.DataFrame) else 0,
+            "len(df_base)": len(df_base) if isinstance(df_base, pd.DataFrame) else 0,
+            "E_sph.shape": tuple(E_sph.shape) if E_sph is not None else None,
             "hits": len(hits),
-            "k_sph": k_sph, "thr_sph": float(thr_sph),
+            "k_sph": k_sph,
+            "thr_sph": thr_sph,
+            "loc_col_effective": loc_col_eff,
         })
 
-    # 2) Agregação dicionários
-    E_ws, L_ws, E_prec, L_prec, E_cp, L_cp = load_dicts()
-    dic_res, debug_raw = aggregate_dict_matches_over_hits(
-        hits, E_ws, L_ws, E_prec, L_prec, E_cp, L_cp,
-        per_event_thr=per_event_thr, support_min=support_min, agg_mode=agg_mode,
-        thr_ws=thr_ws, thr_prec=thr_prec, thr_cp=thr_cp,
-        top_ws=top_ws, top_prec=top_prec, top_cp=top_cp
-    )
-
-    # 3) Tabela hits
     st.subheader(f"Eventos do Sphera (Top-{min(k_sph, len(hits))})")
-    df_hits = hits_dataframe(hits, loc_col_effective)
-    st.dataframe(df_hits, use_container_width=True, hide_index=True)
+    if hits:
+        st.dataframe(hits_dataframe(hits, loc_col_eff), use_container_width=True, hide_index=True)
+    else:
+        st.info("Nenhum evento recuperado. Ajuste o texto/limiar/Top-K.")
 
-    # 4) Depuração
-    from ui.tables import show_debug_raw
-    show_debug_raw(debug_raw)
+    # 2) Agregação de dicionários (só se houver hits)
+    dic_res, debug_raw = {}, {}
+    if hits:
+        E_ws, L_ws, E_prec, L_prec, E_cp, L_cp = load_dicts()
+        dic_res, debug_raw = aggregate_dict_matches_over_hits(
+            hits, E_ws, L_ws, E_prec, L_prec, E_cp, L_cp,
+            per_event_thr=per_event_thr, support_min=support_min, agg_mode=agg_mode,
+            thr_ws=thr_ws, thr_prec=thr_prec, thr_cp=thr_cp,
+            top_ws=top_ws, top_prec=top_prec, top_cp=top_cp
+        )
 
-    # 5) Contexto ao LLM (texto — o modelo NÃO “vê” embeddings, vê o contexto)
+    # 3) Contexto para o LLM (dados + matches)
     ctx_lines = [
-        datasets_ctx,  # seus arquivos .md globais continuam injetados sempre
-        build_sphera_context_md(hits, loc_col_effective),           # já existia
-        build_gosee_context_md(hits_gosee),                         # novo (se você estiver recuperando GoSee)
-        build_investigation_context_md(hits_inc),                   # novo (se você estiver recuperando relatórios)
-        build_dic_matches_md(dic_res),                              # WS/Precursores/CP agregados somente sobre Sphera
+        datasets_ctx,
+        build_sphera_context_md(hits, loc_col_eff),
+        build_dic_matches_md(dic_res),
     ]
     ctx_full = "\n".join([c for c in ctx_lines if c])
 
+    # 4) Chamada ao modelo
     messages = [
-        {"role":"system", "content":"Você é o SAFETY • CHAT. Baseie-se no contexto fornecido e nas regras da organização para ESO."},
-        {"role":"user", "content": user_input},
-        {"role":"user", "content": "DADOS DE APOIO (não responda aqui):\n" + ctx_full},
+        {"role": "system", "content": "Você é o SAFETY • CHAT. Responda como especialista em ESO usando o contexto abaixo."},
+        {"role": "user", "content": user_input},
+        {"role": "user", "content": "DADOS DE APOIO (não responda aqui):\n" + ctx_full},
     ]
 
     try:
         res = chat(messages, stream=False)
-        content = res.get("message",{}).get("content","(sem conteúdo)")
+        answer = res.get("message", {}).get("content", "(sem conteúdo)")
     except Exception as e:
-        content = f"Falha ao consultar o modelo: {e}"
+        msg = str(e)
+        if "405" in msg and "ollama.com/api" in msg:
+            answer = (
+                "Falha ao consultar o modelo (HTTP 405). Verifique em services/llm_client.py "
+                "se está usando **POST https://ollama.com/api/chat** com Bearer API-Key e body JSON {model, messages}."
+            )
+        else:
+            answer = f"Falha ao consultar o modelo: {e}"
 
     with st.chat_message("assistant"):
-        st.markdown(content)
+        st.markdown(answer)
+    ss["chat"].append({"role": "assistant", "content": answer})
 
-    st.session_state.chat.append({"role":"assistant","content":content})
+# --------------------- Histórico -----------------------------------------------
+if ss.get("chat"):
+    st.divider()
+    st.subheader("Histórico")
+    for m in ss["chat"][-10:]:
+        with st.chat_message("assistant"):
+            st.markdown(m.get("content", ""))
