@@ -6,6 +6,9 @@ import numpy as np
 import streamlit as st
 import json
 
+import urllib.request, os
+from config import SPH_NPZ_PATH, SPH_NPZ_URL
+
 # import tolerante das constantes do config
 try:
     from config import (
@@ -64,7 +67,7 @@ def _load_npz_embeddings_any(path: Path | None):
 
 # ---------- (1) Sphera ----------
 @st.cache_data(show_spinner=False)
-def load_sphera():
+'''def load_sphera():
     """Carrega Sphera (parquet + embeddings .npz) e alinha os comprimentos."""
     df = _load_parquet(SPH_PQ_PATH)
     E  = _load_npz_embeddings_any(SPH_NPZ_PATH)
@@ -76,7 +79,7 @@ def load_sphera():
         df = df.iloc[:n].reset_index(drop=True)
     if E.shape[0] != n:
         E = E[:n, :]
-    return df, E
+    return df, E  '''
 
 
 @st.cache_data(show_spinner=False)
@@ -169,3 +172,38 @@ def load_incidents():
     if E.shape[0] != n:
         E = E[:n, :]
     return df, E
+
+def _ensure_npz_local(npz_path: Path, url: str) -> bool:
+    try:
+        npz_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = npz_path.with_suffix(".tmp")
+        urllib.request.urlretrieve(url, tmp)
+        os.replace(tmp, npz_path)
+        return True
+    except Exception as e:
+        st.error(f"[RAG] Falha ao baixar NPZ de {url}: {e}")
+        return False
+
+@st.cache_data(show_spinner=False)
+def load_sphera():
+    # ... leitura do parquet como já está ...
+    # Embeddings:
+    E = None
+    try:
+        if not SPH_NPZ_PATH.exists():
+            st.warning(f"[RAG] NPZ não encontrado: {SPH_NPZ_PATH}. Tentando baixar…")
+            _ensure_npz_local(SPH_NPZ_PATH, SPH_NPZ_URL)
+
+        if SPH_NPZ_PATH.exists():
+            npz = np.load(SPH_NPZ_PATH)
+            E = npz.get("embeddings") or npz.get("E") or None
+            if E is None:
+                st.error(f"[RAG] NPZ sem chave 'embeddings' nem 'E': {SPH_NPZ_PATH}")
+        else:
+            st.error("[RAG] NPZ ausente e não foi possível obter por download.")
+    except Exception as e:
+        st.error(f"[RAG] Falha ao ler NPZ {SPH_NPZ_PATH}: {e}")
+        E = None
+
+    # (restante da sanidade/mismatch igual)
+    return df if df is not None else pd.DataFrame(), E
