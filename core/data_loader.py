@@ -129,28 +129,44 @@ def load_datasets_context(path: str | Path | None = None) -> str:
 # ---------- (3) Dicionários (seu loader atual pode chamar isto) ----------
 @st.cache_data(show_spinner=False)
 def _load_labels_any(parquet_path: Path | None, jsonl_path: Path | None):
-    return _load_parquet(parquet_path) or _load_jsonl(jsonl_path)
+    """Carrega labels (WS/Prec/CP) com checagens explícitas para evitar ValueError do pandas."""
+    df = _load_parquet(parquet_path) if parquet_path else None
+    if df is not None and not df.empty:
+        return df
+
+    df = _load_jsonl(jsonl_path) if jsonl_path else None
+    if df is not None and not df.empty:
+        return df
+
+    return pd.DataFrame()
 
 @st.cache_data(show_spinner=False)
 def load_dicts():
-    """Retorna: (E_ws, L_ws, E_prec, L_prec, E_cp, L_cp). Tolerante a ausências."""
-    E_ws   = _load_npz_embeddings_any(WS_NPZ)
-    L_ws   = _load_labels_any(WS_LBL_PARQ, WS_LBL_JSONL)
+    """
+    Retorna: (E_ws, L_ws, E_prec, L_prec, E_cp, L_cp)
+    Estratégia:
+      - Tenta NPZ; se não houver, tenta PARQUET (coluna embedding/vector/emb/embeddings).
+      - Labels: primeiro PARQUET; se vazio/ausente, JSONL; nunca usar 'or' com DataFrame.
+    """
+    # --- WS ---
+    E_ws = _load_npz_embeddings_any(WS_NPZ)
+    if E_ws is None:
+        E_ws = _load_embeddings_from_parquet(WS_PARQ)
+    L_ws = _load_labels_any(WS_LBL_PARQ, WS_LBL_JSONL)
+
+    # --- PRECURSORES ---
     E_prec = _load_npz_embeddings_any(PREC_NPZ)
+    if E_prec is None:
+        E_prec = _load_embeddings_from_parquet(PREC_PARQ)
     L_prec = _load_labels_any(PREC_LBL_PARQ, PREC_LBL_JSONL)
-    E_cp   = _load_npz_embeddings_any(CP_NPZ_MAIN) or _load_npz_embeddings_any(CP_NPZ_ALT)
-    L_cp   = _load_labels_any(CP_LBL_PARQ, CP_LBL_JSONL)
-    return E_ws, L_ws, E_prec, L_prec, E_cp, L_cp
 
-try:
-    from config import (
-        GOSEE_PQ_PATH, GOSEE_NPZ_PATH,      # GoSee
-        INC_PQ_PATH, INC_NPZ_PATH, INC_JSONL_PATH,  # Investigations/History
-    )
-except Exception:
-    GOSEE_PQ_PATH = GOSEE_NPZ_PATH = None
-    INC_PQ_PATH = INC_NPZ_PATH = INC_JSONL_PATH = None
+    # --- CP ---
+    E_cp = _load_npz_embeddings_any(CP_NPZ_MAIN)
+    if E_cp is None:
+        E_cp = _load_npz_embeddings_any(CP_NPZ_ALT)
+    L_cp = _load_labels_any(CP_LBL_PARQ, CP_LBL_JSONL)
 
+    return (E_ws, L_ws, E_prec, L_prec, E_cp, L_cp)
 
 @st.cache_data(show_spinner=False)
 def load_gosee():
@@ -237,3 +253,23 @@ def load_sphera():
         st.error(f"[RAG] Falha no load_sphera(): {e}")
         # Garante retorno consistente mesmo em erro
         return (df if df is not None else pd.DataFrame(), E)
+
+def _load_embeddings_from_parquet(parquet_path: Path, col_candidates=("embedding","vector","emb","embeddings")):
+    """Se não houver NPZ, tenta carregar embeddings de um .parquet em uma coluna list-like."""
+    try:
+        if not parquet_path or not parquet_path.exists():
+            return None
+        df = pd.read_parquet(parquet_path)
+        for c in col_candidates:
+            if c in df.columns:
+                vals = df[c].to_list()
+                import numpy as np
+                E = np.array(vals, dtype=np.float32)
+                if E.ndim == 1:  # caso seja série de lists/objects
+                    E = np.stack(E)
+                return E
+        st.warning(f"[RAG] {parquet_path} não tem nenhuma coluna de vetor entre {col_candidates}.")
+        return None
+    except Exception as e:
+        st.error(f"[RAG] Falha ao ler embeddings do parquet {parquet_path}: {e}")
+        return None
