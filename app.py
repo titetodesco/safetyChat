@@ -5,8 +5,6 @@ import pandas as pd
 
 # --- imports do projeto
 from config import DATASETS_CONTEXT_PATH, PROMPTS_MD_PATH
-st.sidebar.caption(f"sphera.parquet: {SPH_PQ_PATH.exists()}  |  sphera_embeddings.npz: {SPH_NPZ_PATH.exists()}")
-st.sidebar.caption(f"prompts.md: {PROMPTS_MD_PATH.exists()}")
 from core.data_loader import (
     load_sphera, load_prompts_md, load_datasets_context, load_dicts,
 )
@@ -22,7 +20,8 @@ from ui.sidebar import (
     render_aggregation_controls,
     render_util_buttons,
 )
-
+st.sidebar.caption(f"sphera.parquet: {SPH_PQ_PATH.exists()}  |  sphera_embeddings.npz: {SPH_NPZ_PATH.exists()}")
+st.sidebar.caption(f"prompts.md: {PROMPTS_MD_PATH.exists()}")
 st.set_page_config(page_title="SAFETY • CHAT", layout="wide")
 
 # --------------------- estado base (sempre antes dos widgets) ---------------------
