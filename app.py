@@ -42,17 +42,6 @@ from ui.sidebar import (
 st.set_page_config(page_title="SAFETY • CHAT", layout="wide")
 
 
-DEBUG_RAG = False  # deixe False em produção
-if DEBUG_RAG and isinstance(E_sph, np.ndarray) and not df_sph.empty:
-    st.code({
-        "len_df_sph": len(df_sph),
-        "E_shape": tuple(E_sph.shape),
-        "rowid_minmax": (int(df_sph["_rowid"].min()), int(df_sph["_rowid"].max())),
-    })
-
-
-
-
 # --------------------- Estado base (sempre ANTES de widgets) ---------------------
 ss = st.session_state
 ss.setdefault("draft_prompt", "")
