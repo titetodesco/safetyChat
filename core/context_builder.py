@@ -41,22 +41,29 @@ def _first_present(row: Any, keys: list[str], default: str = "N/D") -> str:
             return v
     return default
 
-
-def hits_dataframe(hits: List[Tuple[str, float, Any]], loc_col: str | None) -> pd.DataFrame:
-    """Monta DataFrame dos hits de Sphera, tolerante ao formato de cada linha."""
+def hits_dataframe(hits, loc_col: str | None):
+    """
+    hits: lista de tuplas (event_id: str, score: float, row: pd.Series|dict)
+    """
+    import pandas as pd
     rows = []
-    for evid, s, row in (hits or []):
-        sim = _to_float(s)
-        loc = _row_get(row, loc_col, "N/D") if loc_col else "N/D"
-        desc = _first_present(row, ["Description", "DESCRIÇÃO", "DESCRIPTION"], default="")
+    for evid, s, row in hits:
+        if isinstance(row, dict):
+            getter = row.get
+        elif hasattr(row, "get"):
+            getter = row.get
+        else:
+            # entrada inesperada; ignora este hit
+            continue
+        loc  = getter(loc_col, "N/D") if loc_col else "N/D"
+        desc = str(getter("Description", "")) or str(getter("Observation", ""))
         rows.append({
             "EventID": evid,
-            "Similaridade": round(sim, 3),
+            "Similaridade (cos)": round(float(s), 3),
             "LOCATION": loc,
             "Description": desc,
         })
     return pd.DataFrame(rows)
-
 
 def build_dic_matches_md(dic_res: Dict[str, list]) -> str:
     lines = ["=== DIC_MATCHES ==="]
@@ -68,7 +75,6 @@ def build_dic_matches_md(dic_res: Dict[str, list]) -> str:
             lines.append(f"- {_to_str(lab)} (sim={_to_float(score):.3f})")
     return "\n".join(lines) + "\n"
 
-
 def build_sphera_context_md(hits: List[Tuple[str, float, Any]], loc_col: str | None) -> str:
     lines = ["=== Sphera ===", "EventID\tSimilaridade\tLOCATION\tDescrição"]
     for evid, s, row in (hits or []):
@@ -77,7 +83,6 @@ def build_sphera_context_md(hits: List[Tuple[str, float, Any]], loc_col: str | N
         desc = _first_present(row, ["Description", "DESCRIÇÃO", "DESCRIPTION"], default="").replace("\n", " ").strip()
         lines.append(f"{evid}\t{sim:.3f}\t{loc}\t{desc}")
     return "\n".join(lines) + "\n"
-
 
 def build_gosee_context_md(hits: List[Tuple[str, float, Any]]) -> str:
     if not hits:
@@ -91,7 +96,6 @@ def build_gosee_context_md(hits: List[Tuple[str, float, Any]]) -> str:
         lines.append(f"[GoSee/{rid}]  \nSimilaridade={sim:.3f}  |  Local={loc}\n")
         lines.append(f"Observation: {obs}\n")
     return "\n".join(lines)
-
 
 def build_investigation_context_md(hits: List[Tuple[str, float, Any]]) -> str:
     if not hits:
