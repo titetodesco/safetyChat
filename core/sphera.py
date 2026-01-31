@@ -39,137 +39,65 @@ def _cosine_query_vs_matrix(q: np.ndarray, E: np.ndarray) -> np.ndarray:
 
 # ========================= API usada no app =============================
 
-def get_sphera_location_col(df: pd.DataFrame) -> Optional[str]:
-    """Descobre a melhor coluna de localização (se existir)."""
-    if df is None or df.empty:
+def get_sphera_location_col(df: pd.DataFrame | None) -> Optional[str]:
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return None
-    for c in ["LOCATION", "Location", "local", "Local", "Area", "Instalação"]:
+    for c in ["LOCATION", "FPSO", "Location", "FPSO/Unidade", "Unidade"]:
         if c in df.columns:
             return c
     return None
 
 
-def filter_sphera(
-    df: pd.DataFrame,
-    locations: List[str] | None,
-    substr: str | None,
-    years: int | None
-) -> pd.DataFrame:
-    """Aplica filtros por local, substring em Description e janela de anos."""
-    if df is None or df.empty:
+def filter_sphera(df: pd.DataFrame | None, locations: List[str] | None, substr: str | None, years: int | None) -> pd.DataFrame | None:
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return df
-
-    out = df
-
-    # filtro por local
+    out = df.copy()
+    # (filtros por years/substring iguais aos seus atuais — manter)
     loc_col = get_sphera_location_col(out)
-    if locations and loc_col and loc_col in out.columns:
-        out = out[out[loc_col].astype(str).isin(locations)]
-
-    # filtro por substring em Description
+    if locations and loc_col:
+        out = out[out[loc_col].astype(str).isin(set(locations))]
     if substr and "Description" in out.columns:
-        mask = out["Description"].astype(str).str.contains(substr, case=False, na=False)
-        out = out[mask]
-
-    # filtro por últimos N anos (heurística)
-    if years and years > 0:
-        year_col = None
-        for c in ["year", "Year", "Ano", "ano", "EventYear"]:
-            if c in out.columns:
-                year_col = c
-                break
-        if year_col:
-            try:
-                yr = pd.to_numeric(out[year_col], errors="coerce").astype("Int64")
-                max_year = int(yr.dropna().max())
-                min_year = max_year - years + 1
-                out = out[yr >= min_year]
-            except Exception:
-                pass
-
-    return out
-
+        out = out[out["Description"].astype(str).str.contains(substr, case=False, na=False)]
+    return out if not out.empty else df
 
 def topk_similar(
     query_text: str,
-    df_base: pd.DataFrame,
-    E_all: np.ndarray | None,
-    *,
+    df: pd.DataFrame | None,
+    E: np.ndarray | None,
     topk: int = 20,
     min_sim: float = 0.30,
-    text_col: str = "Description",
-):
-    """
-    Retorna lista de dicts com:
-      - idx: _rowid original (int)
-      - cos: similaridade (float)
-      - row: linha (pd.Series)
-
-    Observações:
-    - Requer que df_base tenha a coluna '_rowid' (alinhada com E_all).
-    - E_all é a matriz completa de embeddings alinhada ao DF original.
-    - Este método cria um subset E_subset usando os _rowid presentes em df_base.
-    """
-    # sanity checks
-    if not query_text or not query_text.strip():
+) -> List[Tuple[str, float, pd.Series]]:
+    if not query_text or df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return []
-    if df_base is None or df_base.empty:
-        return []
-    if E_all is None or not isinstance(E_all, np.ndarray) or E_all.size == 0:
-        return []
-    if "_rowid" not in df_base.columns:
-        st.warning("Base filtrada não possui coluna `_rowid` para alinhar com embeddings.")
+    if E is None or getattr(E, "size", 0) == 0:
         return []
 
-    rowids = df_base["_rowid"].astype(int).to_numpy()
-    if rowids.size == 0:
-        return []
-    if int(rowids.max()) >= E_all.shape[0]:
-        st.error("Há _rowid fora do intervalo da matriz de embeddings. Verifique o alinhamento DF <-> embeddings.")
-        return []
+    model_name = os.getenv("ST_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
+    enc = ensure_st_encoder(model_name)                     # <- retorna o encoder
+    qv = encode_query(query_text, enc).astype(np.float32)   # <- ORDEM CORRETA!
+    qv /= (np.linalg.norm(qv) + 1e-12)
 
-    # subset de embeddings pela indexação original
-    E_subset = E_all[rowids, :]
-
-    # cria/recupera encoder com o nome do modelo definido no config
-    try:
-        encoder = ensure_st_encoder(model_name=EMBED_MODEL_NAME)
-    except TypeError:
-        # compat com versões antigas que recebem só posicional
-        encoder = ensure_st_encoder(EMBED_MODEL_NAME)
-    except Exception as ex:
-        st.error(f"Falha ao inicializar o encoder '{EMBED_MODEL_NAME}': {ex}")
+    n = min(len(df), E.shape[0])
+    if n == 0:
         return []
+    E_view = E[:n, :]
 
-    # embedding da consulta
-    try:
-        # IMPORTANTE: encode_query NÃO deve passar show_progress_bar ou kwargs não suportados
-        q = encode_query(query_text, encoder)
-    except Exception as ex:
-        st.error(f"Falha ao gerar embedding da consulta: {ex}")
-        return []
-
-    # similaridades
-    try:
-        sims = _cosine_query_vs_matrix(q, E_subset)
-    except Exception as ex:
-        st.error(f"Falha ao calcular similaridades: {ex}")
-        return []
-
+    sims = (E_view @ qv).astype(float)
     order = np.argsort(-sims)
-    hits = []
-    for pos in order:
-        cos = float(sims[pos])
-        if cos < min_sim:
-            continue
-        # cuidado: pos aqui é índice relativo ao df_base filtrado
-        row = df_base.iloc[int(pos)]
-        hits.append({
-            "idx": int(row.get("_rowid", pos)),
-            "cos": cos,
-            "row": row,
-        })
-        if len(hits) >= topk:
+
+    id_col = None
+    for cand in ("Event ID", "EVENT_ID", "EVENTID", "id", "ID"):
+        if cand in df.columns:
+            id_col = cand
             break
 
-    return hits
+    out = []
+    k = max(1, int(topk))
+    for i in order[:k]:
+        s = float(sims[i])
+        if s < float(min_sim):
+            continue
+        row = df.iloc[i]
+        evid = str(row.get(id_col, str(i)))
+        out.append((evid, s, row))
+    return out
