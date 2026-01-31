@@ -6,16 +6,15 @@ import pandas as pd
 import streamlit as st
 
 # ---------------------------------------------------------------------
-# Pega o nome do modelo de embeddings do seu config (com fallback)
+# Nome do modelo de embeddings a partir do config (com fallbacks)
 # ---------------------------------------------------------------------
 try:
-    # comum no seu projeto
     from config import OLLAMA_EMBEDDING_MODEL as EMBED_MODEL_NAME
 except Exception:
     try:
-        from config import EMBEDDING_MODEL as EMBED_MODEL_NAME  # fallback alternativo
+        from config import EMBEDDING_MODEL as EMBED_MODEL_NAME
     except Exception:
-        EMBED_MODEL_NAME = "all-MiniLM-L6-v2"  # fallback seguro
+        EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
 
 from core.encoding import ensure_st_encoder, encode_query
 
@@ -41,6 +40,7 @@ def _cosine_query_vs_matrix(q: np.ndarray, E: np.ndarray) -> np.ndarray:
 # ========================= API usada no app =============================
 
 def get_sphera_location_col(df: pd.DataFrame) -> Optional[str]:
+    """Descobre a melhor coluna de localização (se existir)."""
     if df is None or df.empty:
         return None
     for c in ["LOCATION", "Location", "local", "Local", "Area", "Instalação"]:
@@ -55,6 +55,7 @@ def filter_sphera(
     substr: str | None,
     years: int | None
 ) -> pd.DataFrame:
+    """Aplica filtros por local, substring em Description e janela de anos."""
     if df is None or df.empty:
         return df
 
@@ -100,9 +101,14 @@ def topk_similar(
 ):
     """
     Retorna lista de dicts com:
-      - idx: _rowid original
-      - cos: similaridade
+      - idx: _rowid original (int)
+      - cos: similaridade (float)
       - row: linha (pd.Series)
+
+    Observações:
+    - Requer que df_base tenha a coluna '_rowid' (alinhada com E_all).
+    - E_all é a matriz completa de embeddings alinhada ao DF original.
+    - Este método cria um subset E_subset usando os _rowid presentes em df_base.
     """
     # sanity checks
     if not query_text or not query_text.strip():
@@ -125,12 +131,11 @@ def topk_similar(
     # subset de embeddings pela indexação original
     E_subset = E_all[rowids, :]
 
-    # >>>>>>>>>>>>>>>>> CORREÇÃO AQUI <<<<<<<<<<<<<<<<<
     # cria/recupera encoder com o nome do modelo definido no config
     try:
         encoder = ensure_st_encoder(model_name=EMBED_MODEL_NAME)
     except TypeError:
-        # compat para versões antigas: se a assinatura não aceitar kwarg
+        # compat com versões antigas que recebem só posicional
         encoder = ensure_st_encoder(EMBED_MODEL_NAME)
     except Exception as ex:
         st.error(f"Falha ao inicializar o encoder '{EMBED_MODEL_NAME}': {ex}")
@@ -138,6 +143,7 @@ def topk_similar(
 
     # embedding da consulta
     try:
+        # IMPORTANTE: encode_query NÃO deve passar show_progress_bar ou kwargs não suportados
         q = encode_query(query_text, encoder)
     except Exception as ex:
         st.error(f"Falha ao gerar embedding da consulta: {ex}")
@@ -156,6 +162,7 @@ def topk_similar(
         cos = float(sims[pos])
         if cos < min_sim:
             continue
+        # cuidado: pos aqui é índice relativo ao df_base filtrado
         row = df_base.iloc[int(pos)]
         hits.append({
             "idx": int(row.get("_rowid", pos)),
