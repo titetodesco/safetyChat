@@ -4,6 +4,8 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 import streamlit as st
+import os
+
 
 # ---------------------------------------------------------------------
 # Nome do modelo de embeddings a partir do config (com fallbacks)
