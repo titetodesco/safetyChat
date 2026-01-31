@@ -64,42 +64,35 @@ def filter_sphera(df: pd.DataFrame | None, locations: List[str] | None, substr: 
 
 def topk_similar(
     query_text: str,
-    df: pd.DataFrame | None,
-    E: np.ndarray | None,
+    df: pd.DataFrame,
+    E: np.ndarray,
     topk: int = 20,
     min_sim: float = 0.30,
 ) -> List[Tuple[str, float, pd.Series]]:
-    if not query_text or df is None or not isinstance(df, pd.DataFrame) or df.empty:
-        return []
+    # Import local para evitar NameError em hot-reload
+    import os
+    import numpy as np
+
     if E is None or getattr(E, "size", 0) == 0:
         return []
 
+    # Nome do modelo para o encoder Sentence-Transformers
     model_name = os.getenv("ST_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
-    enc = ensure_st_encoder(model_name)                     # <- retorna o encoder
-    qv = encode_query(query_text, enc).astype(np.float32)   # <- ORDEM CORRETA!
+
+    enc = ensure_st_encoder(model_name)
+    qv = encode_query(query_text, enc).astype(np.float32)  # já normaliza no helper
+    # (se encode_query não normalizar em sua versão, manter a normalização abaixo)
     qv /= (np.linalg.norm(qv) + 1e-12)
 
-    n = min(len(df), E.shape[0])
-    if n == 0:
-        return []
-    E_view = E[:n, :]
+    sims = (E @ qv).reshape(-1)
+    idx = np.argsort(-sims)[: int(topk)]
 
-    sims = (E_view @ qv).astype(float)
-    order = np.argsort(-sims)
-
-    id_col = None
-    for cand in ("Event ID", "EVENT_ID", "EVENTID", "id", "ID"):
-        if cand in df.columns:
-            id_col = cand
-            break
-
-    out = []
-    k = max(1, int(topk))
-    for i in order[:k]:
+    out: List[Tuple[str, float, pd.Series]] = []
+    for i in idx:
         s = float(sims[i])
         if s < float(min_sim):
             continue
-        row = df.iloc[i]
-        evid = str(row.get(id_col, str(i)))
+        row = df.iloc[int(i)]
+        evid = str(row.get("EventID") or row.get("EVENTID") or row.get("ID") or i)
         out.append((evid, s, row))
     return out
