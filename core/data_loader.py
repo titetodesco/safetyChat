@@ -27,7 +27,16 @@ from config import (
 )
 
 # ---------------- Utilitários de IO ----------------
-
+def _coerce_path(p) -> Path | None:
+    if p is None:
+        return None
+    if isinstance(p, Path):
+        return p
+    try:
+        return Path(str(p))
+    except Exception:
+        return None
+        
 def _l2_normalize(mat: np.ndarray) -> np.ndarray:
     if mat is None:
         return None
