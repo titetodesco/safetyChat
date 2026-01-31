@@ -1,37 +1,72 @@
 from __future__ import annotations
+
+import os
+import importlib
+from typing import List, Tuple, Optional
+
 import streamlit as st
 import pandas as pd
 
-# --- Config & Core
-from config import (
-    DATASETS_CONTEXT_PATH, PROMPTS_MD_PATH,
-)
-from core.data_loader import (
-    load_sphera, load_gosee, load_incidents,
-    load_datasets_context, load_prompts_md, load_dicts,
-)
+# ---------- Config (import robusto) ----------
 try:
-    from services.upload_extract import extract_any
-except Exception:
-    try:
-        from service.upload_extract import extract_any  # fallback
-    except Exception:
-        extract_any = None  # desabilita upload-extract se não existir
-try:
-    from services.llm_client import chat
-except Exception:
-    from service.llm_client import chat  # se estiver no singular
+    cfg = importlib.import_module("config")
+except Exception as e:
+    st.error(f"[FATAL] Falha ao importar config.py: {e}")
+    raise
 
-from core.context_builder import (
-    hits_dataframe, build_dic_matches_md, build_sphera_context_md
+# ---------- Core loaders ----------
+from core.data_loader import (
+    load_sphera,
+    load_gosee,
+    load_incidents,
+    load_datasets_context,
+    load_prompts_md,
+    load_dicts,
 )
+
+# ---------- Core RAG helpers ----------
+# ATENÇÃO: estas funções DEVEM existir em core/sphera.py
+#   get_sphera_location_col(df), filter_sphera(df, locations, substr, years), topk_similar(query, df, E, topk, min_sim)
+from core.sphera import get_sphera_location_col, filter_sphera, topk_similar
+
+# ---------- Context builders ----------
+from core.context_builder import (
+    hits_dataframe,
+    build_dic_matches_md,
+    build_sphera_context_md,
+)
+
+# ---------- Dicionários / agregação ----------
 from core.dictionaries import aggregate_dict_matches_over_hits
 
-# --- Serviços
-from services.upload_extract import extract_any
-from services.llm_client import chat
+# ---------- Serviços LLM e upload ----------
+try:
+    from services.upload_extract import extract_any  # se existir
+except Exception:
+    # Fallback mínimo para não quebrar o app se o módulo não estiver no repo
+    def extract_any(f) -> str:
+        try:
+            name = getattr(f, "name", "").lower()
+            data = f.read()
+            if isinstance(data, bytes):
+                try:
+                    data = data.decode("utf-8", errors="ignore")
+                except Exception:
+                    data = ""
+            # suporte simples a txt/md/csv
+            if name.endswith((".txt", ".md", ".csv")):
+                return str(data)
+            return ""
+        except Exception:
+            return ""
 
-# --- Sidebar (sem Assistente de Prompt)
+try:
+    from services.llm_client import chat
+except Exception as e:
+    chat = None  # não bloqueia a UI; apenas desabilita a chamada ao modelo
+
+
+# ---------- Sidebar UI (sem assistente de prompt) ----------
 from ui.sidebar import (
     render_retrieval_controls,
     render_advanced_filters,
@@ -39,116 +74,108 @@ from ui.sidebar import (
     render_util_buttons,
 )
 
+# ---------- Página ----------
 st.set_page_config(page_title="SAFETY • CHAT", layout="wide")
+st.title("SAFETY • CHAT")
 
-
-# --------------------- Estado base (sempre ANTES de widgets) ---------------------
+# ---------- Estado base (SEM debug solto no topo) ----------
 ss = st.session_state
 ss.setdefault("draft_prompt", "")
 ss.setdefault("analysis_text", "")
 ss.setdefault("upld_texts", [])
 ss.setdefault("chat", [])
 
-# --------------------- Carregamento de contexto e datasets -----------------------
-# Mantemos load_prompts_md para compatibilidade futura, mas não exibimos “assistente”.
-_ = load_prompts_md(PROMPTS_MD_PATH)
-datasets_ctx = load_datasets_context(DATASETS_CONTEXT_PATH) or ""
+# ---------- Carregamentos base (dataset + contexto + prompts_md) ----------
+# (prompts_md não é obrigatório para rodar, mas carregamos por compatibilidade)
+datasets_ctx = load_datasets_context(cfg.DATASETS_CONTEXT_PATH)
+_ = load_prompts_md(cfg.PROMPTS_MD_PATH)
 
-# Bases + Embeddings pré-computados
-df_sph, E_sph = load_sphera()           # Sphera
-df_gosee, E_gosee = load_gosee()        # GoSee (carregado, se quiser usar depois)
-df_inc, E_inc = load_incidents()        # Histórico/Investigations (idem)
+df_sph, E_sph = load_sphera()             # Sphera (parquet + npz)
+df_gosee, E_gosee = load_gosee()          # GoSee   (parquet + npz) — se você ainda não usa, mantém carregado
+df_inc, E_inc = load_incidents()          # Incidents/History (parquet/jsonl + npz)
 
-# --------------------- SIDEBAR ---------------------------------------------------
+# ---------- Entrada principal ----------
+colL, colR = st.columns([2, 1], gap="large")
+
+with colL:
+    st.subheader("Prompt (texto do caso atual)")
+    user_text = st.text_area(
+        "Conteúdo do prompt",
+        key="draft_prompt",
+        height=220,
+        placeholder="Descreva o evento/situação aqui...",
+    )
+
+    st.subheader("Upload de arquivo (opcional)")
+    upl_files = st.file_uploader(
+        "Anexe .txt / .md / .csv",
+        type=["txt", "md", "csv"],
+        accept_multiple_files=True,
+    )
+    new_texts: List[str] = []
+    if upl_files:
+        for f in upl_files:
+            try:
+                new_texts.append(extract_any(f) or "")
+            except Exception:
+                new_texts.append("")
+    if new_texts:
+        ss["upld_texts"] = new_texts
+
+    go_btn = st.button("Executar análise", type="primary")
+
+with colR:
+    st.subheader("Contexto fixo (datasets)")
+    st.text_area(
+        "datasets_context.md",
+        value=datasets_ctx or "",
+        height=240,
+        key="datasets_ctx_view",
+        disabled=True,
+    )
+
+# ---------- Sidebar (parâmetros) ----------
 with st.sidebar:
-    st.caption("Parâmetros RAG e utilitários")
-
-k_sph, thr_sph, years = render_retrieval_controls()
-locations, substr, loc_col_guess, loc_options = render_advanced_filters(df_sph)
-(
-    agg_mode, per_event_thr, support_min,
-    thr_ws, thr_prec, thr_cp,
-    top_ws, top_prec, top_cp
-) = render_aggregation_controls()
-clear_upl, clear_chat_btn = render_util_buttons()
+    k_sph, thr_sph, years = render_retrieval_controls()
+    locations, substr, loc_col_override, loc_opts = render_advanced_filters(df_sph)
+    (
+        agg_mode,
+        per_event_thr,
+        support_min,
+        thr_ws,
+        thr_prec,
+        thr_cp,
+        top_ws,
+        top_prec,
+        top_cp,
+    ) = render_aggregation_controls()
+    clear_upl, clear_chat_btn = render_util_buttons()
 
 if clear_upl:
     ss["upld_texts"] = []
-    st.success("Uploads limpos.")
 if clear_chat_btn:
     ss["chat"] = []
-    st.success("Chat limpo.")
 
-# --------------------- UI central ------------------------------------------------
-st.title("SAFETY • CHAT")
-
-draft = st.text_area(
-    "Conteúdo do prompt",
-    key="draft_prompt",
-    height=220,
-    placeholder="Descreva seu caso (o que aconteceu, onde, quando, condições, etc.)…",
-)
-
-analysis_text = st.text_area(
-    "Texto de análise (para Sphera)",
-    key="analysis_text",
-    height=160,
-    placeholder="(Opcional) Texto adicional para direcionar a busca de eventos no Sphera…",
-)
-
-upl_files = st.file_uploader(
-    "Anexar arquivo (opcional)",
-    type=["pdf", "docx", "xlsx", "txt", "md", "csv"],
-    accept_multiple_files=True,
-    key="uploader_any",
-)
-
-col_go, col_clear_draft, col_clear_chat = st.columns([1, 1, 1])
-go_btn      = col_go.button("Enviar para o chat", use_container_width=True, key="btn_go")
-wipe_draft  = col_clear_draft.button("Limpar rascunho", use_container_width=True, key="btn_wipe_draft")
-wipe_chat   = col_clear_chat.button("Limpar chat", use_container_width=True, key="btn_wipe_chat")
-
-if wipe_draft:
-    ss["draft_prompt"] = ""
-    st.rerun()
-if wipe_chat:
-    ss["chat"] = []
-    st.rerun()
-
-# Extrai textos de uploads (se houver)
-if upl_files:
-    texts = []
-    for f in upl_files:
-        try:
-            t = extract_any(f)
-            if t:
-                texts.append(t)
-        except Exception as e:
-            st.warning(f"Falha ao extrair de {getattr(f,'name','(arquivo)')}: {e}")
-    ss["upld_texts"] = texts
-
-# --------------------- Execução ao clicar ----------------------------------------
+# ---------- Execução (quando clicar em Executar análise) ----------
 if go_btn:
-    # Consolida entrada do usuário para rankear no Sphera
-    user_input_parts = [
-        (ss.get("draft_prompt") or "").strip(),
-        (ss.get("analysis_text") or "").strip(),
-        "\n\n".join(ss.get("upld_texts") or []),
-    ]
+    # 1) Texto de entrada (prompt + uploads)
+    user_input_parts = [user_text]
+    if ss.get("upld_texts"):
+        user_input_parts.extend([t for t in ss["upld_texts"] if t])
     user_input = "\n\n".join([p for p in user_input_parts if p]).strip()
 
-    # 1) Recuperação no Sphera
-    loc_col = get_sphera_location_col(df_sph) if isinstance(df_sph, pd.DataFrame) else None
+    # 2) Recuperação Sphera
+    loc_col = loc_col_override or (get_sphera_location_col(df_sph) if isinstance(df_sph, pd.DataFrame) else None)
     df_base = filter_sphera(df_sph, locations, substr, years)
 
-    hits = []
+    hits: List[Tuple[str, float, pd.Series]] = []
     if isinstance(df_base, pd.DataFrame) and not df_base.empty and E_sph is not None and user_input:
         hits = topk_similar(
-            user_input,
-            df_base,
-            E_sph,
-            topk=int(k_sph),
-            min_sim=float(thr_sph),
+            query_text=user_input,
+            df=df_base,
+            E=E_sph,
+            topk=k_sph,
+            min_sim=thr_sph,     # o slider da barra lateral
         )
 
     st.subheader(f"Eventos do Sphera (Top-{min(int(k_sph), len(hits))})")
@@ -159,14 +186,15 @@ if go_btn:
             hide_index=True,
         )
     else:
-        st.info("Nenhum evento recuperado. Ajuste o texto/limiar/Top-K.")
+        st.info("Nenhum evento recuperado. Ajuste o texto/limiar/Top-K ou filtros.")
 
-    # 2) Agregação WS/Precursores/CP (apenas se há hits)
+    # 3) Agregação dicionários (só se houver hits)
     dic_res, debug_raw = {}, {}
     if hits:
         E_ws, L_ws, E_prec, L_prec, E_cp, L_cp = load_dicts()
         dic_res, debug_raw = aggregate_dict_matches_over_hits(
-            hits, E_ws, L_ws, E_prec, L_prec, E_cp, L_cp,
+            hits,
+            E_ws, L_ws, E_prec, L_prec, E_cp, L_cp,
             per_event_thr=per_event_thr,
             support_min=support_min,
             agg_mode=agg_mode,
@@ -174,46 +202,37 @@ if go_btn:
             top_ws=top_ws, top_prec=top_prec, top_cp=top_cp,
         )
 
-    # 3) Monta contexto para o LLM
+    # 4) Monta contexto para LLM
     ctx_lines = [
-        datasets_ctx,
+        datasets_ctx or "",
         build_sphera_context_md(hits, loc_col),
         build_dic_matches_md(dic_res),
     ]
-    ctx_full = "\n".join([c for c in ctx_lines if c])  # evita None
+    ctx_full = "\n".join([c for c in ctx_lines if c]).strip()
 
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "Você é o SAFETY • CHAT. Responda como especialista em Segurança Operacional (ESO), "
-                "usando exclusivamente o contexto fornecido e padrões da organização."
-            ),
-        },
-        {"role": "user", "content": user_input or "(sem texto)"},
-        {"role": "user", "content": "DADOS DE APOIO (não responda aqui):\n" + ctx_full},
-    ]
+    # 5) Chamada ao modelo (se disponível)
+    assistant_content = ""
+    if chat is None:
+        assistant_content = "⚠️ Serviço de LLM indisponível neste momento (services.llm_client)."
+    else:
+        messages = [
+            {"role": "system", "content": "Você é o SAFETY • CHAT. Baseie-se no contexto fornecido e nas regras da organização para ESO."},
+            {"role": "user",   "content": user_input or ""},
+            {"role": "user",   "content": "DADOS DE APOIO (não responda aqui):\n" + ctx_full},
+        ]
+        try:
+            res = chat(messages, stream=False)
+            assistant_content = res.get("message", {}).get("content", "") or "(sem conteúdo)"
+        except Exception as e:
+            assistant_content = f"Falha ao consultar o modelo: {e}"
 
-    # 4) Chamada ao modelo (Ollama Cloud)
-    try:
-        res = chat(messages, stream=False)
-        answer = res.get("message", {}).get("content", "(sem conteúdo)")
-    except Exception as e:
-        msg = str(e)
-        if "405" in msg and "ollama.com/api" in msg:
-            answer = (
-                "Falha ao consultar o modelo (HTTP 405). "
-                "Certifique-se de estar usando **POST https://ollama.com/api/chat** com cabeçalho "
-                "`Authorization: Bearer <sua-chave>` e body JSON `{ \"model\": \"gpt-oss:20b-cloud\", \"messages\": [...] }`."
-            )
-        else:
-            answer = f"Falha ao consultar o modelo: {e}"
-
+    # 6) Apresenta resposta
     with st.chat_message("assistant"):
-        st.markdown(answer)
-    ss["chat"].append({"role": "assistant", "content": answer})
+        st.markdown(assistant_content)
 
-# --------------------- Histórico --------------------------------------------------
+    ss["chat"].append({"role": "assistant", "content": assistant_content})
+
+# ---------- Histórico ----------
 if ss.get("chat"):
     st.divider()
     st.subheader("Histórico")
