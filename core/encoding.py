@@ -7,60 +7,53 @@ import numpy as np
 _ENCODER = None
 _ENCODER_NAME: Optional[str] = None
 
-def ensure_st_encoder(model_name: str):
-    """
-    Garante um SentenceTransformer carregado com o nome informado.
-    Reutiliza a instância se o nome não mudar.
-    """
-    global _ENCODER, _ENCODER_NAME
-    if _ENCODER is not None and _ENCODER_NAME == model_name:
-        return _ENCODER
-
+@st.cache_resource(show_spinner=False)
+def ensure_st_encoder(model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
+    """Carrega e cacheia um SentenceTransformer. Sempre retorna um objeto com `.encode`."""
     from sentence_transformers import SentenceTransformer
-    _ENCODER = SentenceTransformer(model_name)
-    _ENCODER_NAME = model_name
-    return _ENCODER
+    model = SentenceTransformer(model_name, device="cpu")
+    return model
 
-def encode_query(text: str, encoder) -> np.ndarray:
+def encode_texts(encoder, texts):
     """
-    Codifica um único texto -> vetor numpy 1D.
-    NÃO usa `show_progress_bar` para manter compatibilidade.
+    Retorna matriz [n x d] em float32, normalizada por linha.
+    Funciona com SentenceTransformer (tem .encode) ou com encoder 'callable'.
     """
-    if not text:
-        # Fallback só é usado se text vier vazio; dimensão real do modelo será
-        # a do encode abaixo, então evitamos adivinhar aqui.
-        return np.zeros((0,), dtype="float32")
+    if hasattr(encoder, "encode"):
+        # Sentence-Transformers
+        vecs = encoder.encode(
+            texts,
+            convert_to_numpy=True,     # retorna np.ndarray
+            normalize_embeddings=False # normalizamos manualmente por consistência
+        )
+        V = np.asarray(vecs, dtype=np.float32)
+    else:
+        # Encoder 'callable' que retorna vetores para cada texto
+        rows = []
+        for t in texts:
+            v = np.asarray(encoder(t), dtype=np.float32)
+            rows.append(v)
+        V = np.vstack(rows).astype(np.float32)
 
-    vec = encoder.encode(
-        [text],
-        convert_to_numpy=True,
-        normalize_embeddings=False,  # normalizamos no consumidor quando preciso
-        # show_progress_bar NÃO suportado em algumas versões
-    )[0]
-    return vec
+    # normalização L2 por linha
+    norms = np.linalg.norm(V, axis=1, keepdims=True) + 1e-12
+    V = V / norms
+    return V
 
-def encode_texts(texts: Iterable[str], encoder, batch_size: int = 64) -> np.ndarray:
+def encode_query(text, encoder):
     """
-    Codifica uma lista/iterável de textos -> matriz numpy 2D [N, D].
-    Compatível com versões antigas do sentence-transformers (sem show_progress_bar).
+    Retorna vetor [d] float32 normalizado.
+    Compatível com SentenceTransformer ou encoder 'callable'.
     """
-    # Normaliza entrada
-    if texts is None:
-        texts = []
-    if not isinstance(texts, list):
-        texts = list(texts)
+    if hasattr(encoder, "encode"):
+        v = encoder.encode(
+            [text],
+            convert_to_numpy=True,
+            normalize_embeddings=False
+        )[0]
+        v = np.asarray(v, dtype=np.float32)
+    else:
+        v = np.asarray(encoder(text), dtype=np.float32)
 
-    if len(texts) == 0:
-        # Sem textos -> matriz vazia [0, D]; descobrimos D com um dummy curto
-        # para evitar adivinhação da dimensão.
-        dummy = encoder.encode([""], convert_to_numpy=True, normalize_embeddings=False)[0]
-        return np.zeros((0, dummy.shape[0]), dtype=dummy.dtype)
-
-    mat = encoder.encode(
-        texts,
-        convert_to_numpy=True,
-        normalize_embeddings=False,
-        batch_size=batch_size,
-        # show_progress_bar NÃO suportado em algumas versões
-    )
-    return mat
+    v /= (np.linalg.norm(v) + 1e-12)
+    return v
