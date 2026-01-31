@@ -25,8 +25,8 @@ from core.dictionaries import aggregate_dict_matches_over_hits
 from services.llm_client import chat
 
 # --- Página -------------------------------------------------------------------
-st.set_page_config(page_title="SAFETY • CHAT (Somente Sphera)", layout="wide")
-st.title("SAFETY • CHAT (Somente Sphera)")
+st.set_page_config(page_title="SAFETY • CHAT", layout="wide")
+st.title("SAFETY • CHAT")
 
 # --------------------- Estado base (sempre ANTES de widgets) ------------------
 ss = st.session_state
