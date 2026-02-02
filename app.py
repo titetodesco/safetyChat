@@ -21,8 +21,29 @@ from core.context_builder import (
 )
 from core.dictionaries import aggregate_dict_matches_over_hits
 
-from services.upload_extract import extract_any  # <<< FIX: extractor robusto
+from services.upload_extract import extract_any
 from services.llm_client import chat
+
+
+# --- Callbacks (DEVEM vir antes dos widgets que usam as keys) -----------------
+def clear_draft():
+    st.session_state["draft_prompt"] = ""
+    st.session_state["analysis_text"] = ""
+    st.session_state["upld_texts"] = []
+    st.rerun()
+
+
+def clear_chat():
+    # limpa o histórico usado na renderização
+    st.session_state["chat"] = []
+
+    # defensivo: remove possíveis chaves alternativas caso existam em outras versões
+    for k in ["messages", "history", "chat_messages", "last_reply", "last_ctx", "last_hits"]:
+        if k in st.session_state:
+            del st.session_state[k]
+
+    st.rerun()
+
 
 # --- Página -------------------------------------------------------------------
 st.set_page_config(page_title="SAFETY • CHAT", layout="wide")
@@ -60,13 +81,8 @@ with st.sidebar:
     locations = st.multiselect("Location", options=loc_opts, default=[], key="sb_locations")
 
     st.header("Agregação sobre eventos recuperados (Sphera)")
-
-    # <<< FIX: compatível com dictionaries.aggregate_dict_matches_over_hits
     agg_mode = st.selectbox("Agregação", options=["max", "mean"], index=0, key="sb_agg_mode")
-
-    # <<< FIX: 0..1 float (não 0..20 int)
     per_event_thr = st.slider("Limiar por evento (dicionários)", 0.0, 1.0, 0.30, 0.01, key="sb_per_event_thr")
-
     support_min = st.slider("Suporte mínimo (nº eventos)", 1, 50, 2, 1, key="sb_support_min")
 
     st.markdown("---")
@@ -78,7 +94,7 @@ with st.sidebar:
     top_prec = st.slider("Top-N Precursores", 1, 50, 10, 1, key="sb_top_prec")
     top_cp   = st.slider("Top-N CP", 1, 50, 10, 1, key="sb_top_cp")
 
-# --------------------- Área principal (UMA coluna, sem contexto fixo) ---------
+# --------------------- Área principal -----------------------------------------
 st.subheader("Conteúdo do prompt")
 draft = st.text_area(
     "Digite ou carregue um modelo de prompt…",
@@ -99,7 +115,7 @@ upl = st.file_uploader(
     label_visibility="collapsed",
 )
 if upl is not None:
-    uploaded_text = extract_any(upl)  # <<< FIX: extrai de vários formatos
+    uploaded_text = extract_any(upl)
     if uploaded_text.strip():
         ss.upld_texts.append(uploaded_text)
         st.success(f"Upload recebido: {upl.name}")
@@ -110,15 +126,9 @@ c1, c2, c3 = st.columns([1, 1, 1])
 with c1:
     go_btn = st.button("Enviar para o chat", type="primary")
 with c2:
-    if st.button("Limpar rascunho"):
-        ss["draft_prompt"] = ""
-        ss["analysis_text"] = ""
-        ss["upld_texts"] = []
-        st.rerun()
+    st.button("Limpar rascunho", on_click=clear_draft)
 with c3:
-    if st.button("Limpar chat"):
-        ss["chat"] = []
-        st.rerun()
+    st.button("Limpar chat", on_click=clear_chat)
 
 # --------------------- Execução ------------------------------------------------
 if go_btn:
@@ -159,7 +169,7 @@ if go_btn:
             top_ws=int(top_ws), top_prec=int(top_prec), top_cp=int(top_cp),
         )
 
-    # 3) Contexto para o LLM (somente texto, sem “painel de contexto”)
+    # 3) Contexto para o LLM
     ctx_full = "\n".join([
         build_sphera_context_md(hits, loc_col),
         build_dic_matches_md(dic_res),
@@ -178,13 +188,4 @@ if go_btn:
         reply = f"Falha ao consultar o modelo: {e}"
 
     with st.chat_message("assistant"):
-        st.markdown(reply)
-    ss.chat.append({"role": "assistant", "content": reply})
-
-# ------------- Histórico (últimas 10) -----------------------------------------
-if ss.get("chat"):
-    st.divider()
-    st.subheader("Histórico")
-    for m in ss.chat[-10:]:
-        with st.chat_message("assistant"):
-            st.markdown(m.get("content", ""))
+        st.markd
