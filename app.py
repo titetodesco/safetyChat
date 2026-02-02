@@ -22,7 +22,11 @@ from core.context_builder import (
 from core.dictionaries import aggregate_dict_matches_over_hits
 
 from services.upload_extract import extract_any
-from services.llm_client import chat
+try:
+    from services.llm_client import chat
+except Exception:
+    # fallback se llm_client.py estiver na raiz do projeto
+    from llm_client import chat
 
 
 # --- Callbacks (DEVEM vir antes dos widgets que usam as keys) -----------------
