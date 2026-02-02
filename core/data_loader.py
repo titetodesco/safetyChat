@@ -1,3 +1,4 @@
+# core/data_loader.py
 from __future__ import annotations
 import json
 from pathlib import Path
@@ -36,31 +37,41 @@ def _coerce_path(p) -> Path | None:
         return Path(str(p))
     except Exception:
         return None
-        
+
 def _l2_normalize(mat: np.ndarray) -> np.ndarray:
     if mat is None:
         return None
-    # evita divisão por zero
     norms = np.linalg.norm(mat, axis=1, keepdims=True) + 1e-12
     return mat / norms
 
 @st.cache_data(show_spinner=False)
 def _load_npz_embeddings_strict(path: Path) -> np.ndarray:
-    # Versão “estrita”: NPZ é obrigatório e deve ter chave 'embeddings' ou o único array
-    if path is None or not isinstance(path, Path):
+    """
+    Carrega embeddings NUMPY (strict): falha claramente se ausente/invalid.
+    Espera-se chave 'embeddings' OU (arr_0 único) OU primeira matriz 2D encontrada.
+    Retorna float32 e L2-normalizado por linha.
+    """
+    if not isinstance(path, Path):
         raise FileNotFoundError("[RAG] Caminho NPZ inválido (None ou não-Path).")
     if not path.exists():
         raise FileNotFoundError(f"[RAG] NPZ não encontrado: {path}")
-    npz = np.load(path, allow_pickle=False)
-    if "embeddings" in npz.files:
-        E = npz["embeddings"]
-    else:
-        # pega o primeiro array do NPZ (padrão comum em dumps simples)
-        first_key = npz.files[0]
-        E = npz[first_key]
-    if not isinstance(E, np.ndarray) or E.ndim != 2:
-        raise ValueError(f"[RAG] Formato inesperado no NPZ: {path}")
-    return _l2_normalize(E.astype(np.float32))
+
+    with np.load(path, allow_pickle=False) as npz:
+        if "embeddings" in npz.files:
+            arr = npz["embeddings"]
+        elif "arr_0" in npz.files and len(npz.files) == 1:
+            arr = npz["arr_0"]
+        else:
+            candidates = [k for k in npz.files if np.asarray(npz[k]).ndim == 2]
+            if not candidates:
+                raise ValueError(f"[RAG] NPZ {path} sem matriz 2D de embeddings.")
+            arr = np.asarray(npz[candidates[0]])
+
+    if not isinstance(arr, np.ndarray) or arr.ndim != 2:
+        raise ValueError(f"[RAG] Embeddings inválidos em {path} (esperado 2D).")
+
+    arr = arr.astype(np.float32, copy=False)
+    return _l2_normalize(arr)
 
 @st.cache_data(show_spinner=False)
 def _load_parquet(path: Optional[Path]) -> Optional[pd.DataFrame]:
@@ -91,34 +102,6 @@ def _load_jsonl(path: Optional[Path]) -> Optional[pd.DataFrame]:
     except Exception:
         return None
 
-@st.cache_data(show_spinner=False)
-def _load_npz_embeddings_strict(path: Optional[Path]) -> np.ndarray:
-    """
-    Carrega embeddings NUMPY (strict): falha claramente se ausente/invalid.
-    Espera-se chave 'embeddings' OU array raiz em np.load(...).
-    """
-    if not isinstance(path, Path):
-        raise FileNotFoundError("Caminho NPZ inválido (None ou não-Path).")
-    if not path.exists():
-        raise FileNotFoundError(f"NPZ não encontrado: {path}")
-
-    with np.load(path, allow_pickle=False) as npz:
-        # Se há uma única chave 'arr_0', tratamos como array raiz.
-        if "embeddings" in npz.files:
-            arr = npz["embeddings"]
-        elif "arr_0" in npz.files and len(npz.files) == 1:
-            arr = npz["arr_0"]
-        else:
-            # tenta achar a primeira chave com shape 2D
-            candidates = [k for k in npz.files if np.array(npz[k]).ndim == 2]
-            if not candidates:
-                raise ValueError(f"NPZ {path} sem matriz 2D de embeddings.")
-            arr = np.array(npz[candidates[0]])
-
-    if not isinstance(arr, np.ndarray) or arr.ndim != 2:
-        raise ValueError(f"Embeddings inválidos em {path} (esperado 2D).")
-    return arr
-
 # ---------------- Carregadores de Docs ----------------
 
 @st.cache_data(show_spinner=False)
@@ -143,29 +126,20 @@ def load_prompts_md(path: Optional[Path]) -> Optional[str]:
 
 @st.cache_data(show_spinner=False)
 def load_sphera() -> tuple[pd.DataFrame, np.ndarray]:
-    # 1) Carrega DF
     if SPH_PQ_PATH is None or not isinstance(SPH_PQ_PATH, Path):
         raise ValueError("[RAG] SPH_PQ_PATH inválido.")
-    df = pd.read_parquet(SPH_PQ_PATH)
-    # garante índice posicional
-    df = df.reset_index(drop=True)
-    # injeta coluna posicional que casa 1:1 com E
+    df = pd.read_parquet(SPH_PQ_PATH).reset_index(drop=True)
     df["_rowid"] = np.arange(len(df), dtype=np.int32)
 
-    # 2) Carrega E (npz estrito) e valida shape
     if SPH_NPZ_PATH is None or not isinstance(SPH_NPZ_PATH, Path):
         raise ValueError("[RAG] SPH_NPZ_PATH inválido.")
     E = _load_npz_embeddings_strict(SPH_NPZ_PATH)
 
     if E.shape[0] != len(df):
-        raise ValueError(
-            f"[RAG] Mismatch DF/Embeddings: len(df)={len(df)} vs E.shape[0]={E.shape[0]}"
-        )
+        raise ValueError(f"[RAG] Mismatch DF/Embeddings: len(df)={len(df)} vs E.shape[0]={E.shape[0]}")
 
-    # 3) Confere colunas esperadas (tolerante ao nome de LOCATION)
-    expected_desc = "Description"
-    if expected_desc not in df.columns:
-        # tenta variantes
+    # Description obrigatória
+    if "Description" not in df.columns:
         for c in df.columns:
             if c.lower() == "description":
                 df.rename(columns={c: "Description"}, inplace=True)
@@ -173,7 +147,7 @@ def load_sphera() -> tuple[pd.DataFrame, np.ndarray]:
         if "Description" not in df.columns:
             raise KeyError("[RAG] Coluna 'Description' não encontrada no Sphera.")
 
-    # 4) Location tolerante
+    # Location tolerante -> padroniza em LOCATION se achar; senão cria
     loc_candidates = ["LOCATION", "Location", "local", "Local", "Área", "Area"]
     loc_col = None
     for c in loc_candidates:
@@ -181,7 +155,6 @@ def load_sphera() -> tuple[pd.DataFrame, np.ndarray]:
             loc_col = c
             break
     if loc_col is None:
-        # tudo bem, seguimos sem LOCATION
         df["LOCATION"] = ""
     else:
         if loc_col != "LOCATION":
@@ -208,7 +181,6 @@ def load_gosee() -> Tuple[pd.DataFrame, np.ndarray | None]:
 
 @st.cache_data(show_spinner=False)
 def load_incidents() -> Tuple[pd.DataFrame, np.ndarray | None]:
-    # History: fonte primária em JSONL; se houver Parquet, pode-se usar também.
     df = None
     if isinstance(INC_PQ_PATH, Path):
         df = _load_parquet(INC_PQ_PATH)
@@ -258,6 +230,8 @@ def load_dicts():
     cp_npz_path = CP_NPZ_MAIN if isinstance(CP_NPZ_MAIN, Path) else None
     if cp_npz_path is None and isinstance(CP_NPZ_ALT, Path):
         cp_npz_path = CP_NPZ_ALT
+    if cp_npz_path is None:
+        raise FileNotFoundError("[RAG] CP_NPZ_MAIN/ALT inválido (None).")
     E_cp = _load_npz_embeddings_strict(cp_npz_path)
     L_cp = _load_labels_any(CP_LBL_PARQ, CP_LBL_JSONL)
 
@@ -268,8 +242,8 @@ def load_dicts():
             return E[:m, :], L.iloc[:m].reset_index(drop=True)
         return E, L
 
-    E_ws, L_ws   = _align(E_ws, L_ws)
+    E_ws, L_ws     = _align(E_ws, L_ws)
     E_prec, L_prec = _align(E_prec, L_prec)
-    E_cp, L_cp   = _align(E_cp, L_cp)
+    E_cp, L_cp     = _align(E_cp, L_cp)
 
     return E_ws, L_ws, E_prec, L_prec, E_cp, L_cp
