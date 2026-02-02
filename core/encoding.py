@@ -2,6 +2,7 @@
 from __future__ import annotations
 from typing import Iterable, Optional, List
 import numpy as np
+import streamlit as st
 
 # Cache simples de encoder (evita recarregar o modelo)
 _ENCODER = None
