@@ -1,3 +1,4 @@
+# app.py
 from __future__ import annotations
 import streamlit as st
 import pandas as pd
@@ -20,7 +21,7 @@ from core.context_builder import (
 )
 from core.dictionaries import aggregate_dict_matches_over_hits
 
-# Se tiver, use seu cliente de LLM; senão, o try/except abaixo mostra msg de erro
+from services.upload_extract import extract_any  # <<< FIX: extractor robusto
 from services.llm_client import chat
 
 # --- Página -------------------------------------------------------------------
@@ -43,27 +44,37 @@ df_sph, E_sph = load_sphera()
 # --------------------- SIDEBAR (parâmetros) -----------------------------------
 with st.sidebar:
     st.header("Recuperação – Sphera")
-    k_sph  = st.slider("Top-K Sphera", 5, 100, 20, step=5, key="sb_topk_sph")
+    k_sph   = st.slider("Top-K Sphera", 5, 100, 20, step=5, key="sb_topk_sph")
     thr_sph = st.slider("Limiar Sphera (cos)", 0.0, 1.0, 0.30, 0.01, key="sb_thr_sph")
-    years  = st.slider("Últimos N anos", 0, 10, 3, 1, key="sb_years")
+    years   = st.slider("Últimos N anos", 0, 10, 3, 1, key="sb_years")
 
     st.header("Filtros avançados – Sphera")
     substr = st.text_input("Description contém (substring)", value="", key="sb_substr")
 
     loc_col_detected = get_sphera_location_col(df_sph) if isinstance(df_sph, pd.DataFrame) else None
-    loc_opts = sorted(df_sph[loc_col_detected].dropna().unique().tolist()) if (isinstance(df_sph, pd.DataFrame) and loc_col_detected in df_sph.columns) else []
-    locations = st.multiselect("Location (coluna: LOCATION)", options=loc_opts, default=[], key="sb_locations")
+    loc_opts = (
+        sorted(df_sph[loc_col_detected].dropna().unique().tolist())
+        if (isinstance(df_sph, pd.DataFrame) and loc_col_detected in df_sph.columns)
+        else []
+    )
+    locations = st.multiselect("Location", options=loc_opts, default=[], key="sb_locations")
 
     st.header("Agregação sobre eventos recuperados (Sphera)")
-    agg_mode = st.selectbox("Agregação", options=["count", "sum"], index=0, key="sb_agg_mode")
-    per_event_thr = st.slider("Min. itens por evento (p/contar)", 0, 20, 0, 1, key="sb_per_event_thr")
-    support_min   = st.slider("Suporte mínimo (nº eventos)", 1, 50, 1, 1, key="sb_support_min")
 
-    thr_ws  = st.slider("Limiar WS", 0.0, 1.0, 0.30, 0.01, key="sb_thr_ws")
+    # <<< FIX: compatível com dictionaries.aggregate_dict_matches_over_hits
+    agg_mode = st.selectbox("Agregação", options=["max", "mean"], index=0, key="sb_agg_mode")
+
+    # <<< FIX: 0..1 float (não 0..20 int)
+    per_event_thr = st.slider("Limiar por evento (dicionários)", 0.0, 1.0, 0.30, 0.01, key="sb_per_event_thr")
+
+    support_min = st.slider("Suporte mínimo (nº eventos)", 1, 50, 2, 1, key="sb_support_min")
+
+    st.markdown("---")
+    thr_ws   = st.slider("Limiar WS", 0.0, 1.0, 0.30, 0.01, key="sb_thr_ws")
     thr_prec = st.slider("Limiar Precursores", 0.0, 1.0, 0.30, 0.01, key="sb_thr_prec")
     thr_cp   = st.slider("Limiar CP", 0.0, 1.0, 0.30, 0.01, key="sb_thr_cp")
 
-    top_ws  = st.slider("Top-N WS", 1, 50, 10, 1, key="sb_top_ws")
+    top_ws   = st.slider("Top-N WS", 1, 50, 10, 1, key="sb_top_ws")
     top_prec = st.slider("Top-N Precursores", 1, 50, 10, 1, key="sb_top_prec")
     top_cp   = st.slider("Top-N CP", 1, 50, 10, 1, key="sb_top_cp")
 
@@ -82,20 +93,20 @@ analysis = st.text_area(
 
 st.subheader("Anexar arquivo (opcional)")
 upl = st.file_uploader(
-    "Anexe .txt / .md / .csv",
+    "Anexe .txt / .md / .csv / .pdf / .docx / .xlsx",
     type=["txt", "md", "csv", "pdf", "docx", "xlsx"],
     accept_multiple_files=False,
     label_visibility="collapsed",
 )
 if upl is not None:
-    try:
-        uploaded_text = upl.read().decode("utf-8", errors="ignore")
-    except Exception:
-        uploaded_text = ""
+    uploaded_text = extract_any(upl)  # <<< FIX: extrai de vários formatos
     if uploaded_text.strip():
         ss.upld_texts.append(uploaded_text)
+        st.success(f"Upload recebido: {upl.name}")
+    else:
+        st.warning(f"Não foi possível extrair texto de {upl.name}.")
 
-c1, c2, c3 = st.columns([1,1,1])
+c1, c2, c3 = st.columns([1, 1, 1])
 with c1:
     go_btn = st.button("Enviar para o chat", type="primary")
 with c2:
@@ -141,9 +152,11 @@ if go_btn:
         dic_res, debug_raw = aggregate_dict_matches_over_hits(
             hits,
             E_ws, L_ws, E_prec, L_prec, E_cp, L_cp,
-            per_event_thr=per_event_thr, support_min=support_min, agg_mode=agg_mode,
-            thr_ws=thr_ws, thr_prec=thr_prec, thr_cp=thr_cp,
-            top_ws=top_ws, top_prec=top_prec, top_cp=top_cp,
+            per_event_thr=float(per_event_thr),
+            support_min=int(support_min),
+            agg_mode=str(agg_mode),
+            thr_ws=float(thr_ws), thr_prec=float(thr_prec), thr_cp=float(thr_cp),
+            top_ws=int(top_ws), top_prec=int(top_prec), top_cp=int(top_cp),
         )
 
     # 3) Contexto para o LLM (somente texto, sem “painel de contexto”)
