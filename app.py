@@ -228,17 +228,20 @@ if go_btn:
 
     # 2) Agregação dicionários (WS/Prec/CP) — calculado por embeddings (não pelo LLM)
     dic_res, debug_raw = {}, {}
+    # SEMPRE inicialize antes (mesmo se hits estiver vazio)
+    ws_matches = []
+    prec_matches = []
+    cp_matches = []
+
     if hits:
         E_ws, L_ws, E_prec, L_prec, E_cp, L_cp = load_dicts()
-        dic_res, debug_raw = aggregate_dict_matches_over_hits(
-            hits,
-            E_ws, L_ws, E_prec, L_prec, E_cp, L_cp,
-            per_event_thr=float(per_event_thr),
-            support_min=int(support_min),
-            agg_mode=str(agg_mode),
-            thr_ws=float(thr_ws), thr_prec=float(thr_prec), thr_cp=float(thr_cp),
-            top_ws=int(top_ws), top_prec=int(top_prec), top_cp=int(top_cp),
-        )
+        dic_res, debug_raw = aggregate_dict_matches_over_hits(...)
+        ws_matches = dic_res.get("WS", [])
+        prec_matches = dic_res.get("Precursores", [])
+        cp_matches = dic_res.get("CP", [])
+    else:
+        dic_res, debug_raw = {"WS": [], "Precursores": [], "CP": []}, {}
+
     allowed_ws_terms = [str(t[0]).strip() for t in ws_matches]
     allowed_prec_terms = [str(t[0]).strip() for t in prec_matches]
     allowed_cp_terms = [str(t[0]).strip() for t in cp_matches]
