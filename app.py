@@ -10,7 +10,6 @@ if str(ROOT_DIR) not in sys.path:
 
 import streamlit as st
 import pandas as pd
-import numpy as np
 
 import config as cfg
 
@@ -33,9 +32,8 @@ from services.upload_extract import extract_any
 from services.llm_client import chat
 
 
-# -------------------------- Helpers -------------------------------------------
+# ---------------- Helpers ----------------
 def _ensure_eventid_column(df: pd.DataFrame) -> pd.DataFrame:
-    """Garante existir coluna 'EventID'."""
     if df is None or df.empty:
         return df
     if "EventID" in df.columns:
@@ -49,14 +47,11 @@ def _ensure_eventid_column(df: pd.DataFrame) -> pd.DataFrame:
         if c in df.columns:
             return df.rename(columns={c: "EventID"})
 
-    # fallback explícito (não engana como EventID real)
-    if "_rowid" in df.columns:
-        df = df.copy()
-        df["EventID"] = df["_rowid"].apply(lambda x: f"ROW_{x}")
-        return df
-
     df = df.copy()
-    df["EventID"] = [f"ROW_{i}" for i in range(len(df))]
+    if "_rowid" in df.columns:
+        df["EventID"] = df["_rowid"].apply(lambda x: f"ROW_{x}")
+    else:
+        df["EventID"] = [f"ROW_{i}" for i in range(len(df))]
     return df
 
 
@@ -69,7 +64,7 @@ def _safe_event_ids_from_hits(hits) -> list[str]:
     return ids
 
 
-# -------------------------- Callbacks ----------------------------------------
+# ---------------- Callbacks ----------------
 def clear_draft():
     st.session_state["draft_prompt"] = ""
     st.session_state["analysis_text"] = ""
@@ -83,7 +78,7 @@ def clear_chat():
             del st.session_state[k]
 
 
-# -------------------------- Page ---------------------------------------------
+# ---------------- Page ----------------
 st.set_page_config(page_title="SAFETY • CHAT", layout="wide")
 st.title("SAFETY • CHAT")
 
@@ -93,14 +88,14 @@ ss.setdefault("analysis_text", "")
 ss.setdefault("upld_texts", [])
 ss.setdefault("chat", [])
 
-# Carregamentos “silenciosos”
+# carregamentos silenciosos
 _ = load_datasets_context(cfg.DATASETS_CONTEXT_PATH)
 _ = load_prompts_md(cfg.PROMPTS_MD_PATH)
 
 df_sph, E_sph = load_sphera()
 df_sph = _ensure_eventid_column(df_sph)
 
-# -------------------------- Sidebar ------------------------------------------
+# ---------------- Sidebar ----------------
 with st.sidebar:
     st.header("Recuperação – Sphera")
     k_sph = st.slider("Top-K Sphera", 5, 100, 20, step=5, key="sb_topk_sph")
@@ -121,37 +116,27 @@ with st.sidebar:
     st.header("Agregação sobre eventos recuperados (Sphera)")
     agg_mode = st.selectbox("Agregação", options=["max", "mean"], index=0, key="sb_agg_mode")
     per_event_thr = st.slider("Limiar por evento (dicionários)", 0.0, 1.0, 0.30, 0.01, key="sb_per_event_thr")
-    support_min = st.slider("Suporte mínimo (nº eventos)", 1, 50, 2, 1, key="sb_support_min")
+    support_min = st.slider("Suporte mínimo (nº eventos)", 1, 50, 20, 1, key="sb_support_min")
 
     st.markdown("---")
-    thr_ws = st.slider("Limiar WS", 0.0, 1.0, 0.30, 0.01, key="sb_thr_ws")
-    thr_prec = st.slider("Limiar Precursores", 0.0, 1.0, 0.30, 0.01, key="sb_thr_prec")
+    thr_ws = st.slider("Limiar WS", 0.0, 1.0, 0.50, 0.01, key="sb_thr_ws")
+    thr_prec = st.slider("Limiar Precursores", 0.0, 1.0, 0.40, 0.01, key="sb_thr_prec")
     thr_cp = st.slider("Limiar CP", 0.0, 1.0, 0.30, 0.01, key="sb_thr_cp")
 
     top_ws = st.slider("Top-N WS", 1, 50, 10, 1, key="sb_top_ws")
     top_prec = st.slider("Top-N Precursores", 1, 50, 10, 1, key="sb_top_prec")
     top_cp = st.slider("Top-N CP", 1, 50, 10, 1, key="sb_top_cp")
 
-# -------------------------- Main ---------------------------------------------
+# ---------------- Main ----------------
 st.subheader("Conteúdo do prompt")
-draft = st.text_area(
-    "Digite ou carregue um modelo de prompt…",
-    key="draft_prompt",
-    height=220,
-    label_visibility="collapsed",
-)
+draft = st.text_area("Prompt", key="draft_prompt", height=220, label_visibility="collapsed")
 
 st.subheader("Texto de análise (para Sphera)")
-analysis = st.text_area(
-    "Cole aqui a descrição/evento a analisar…",
-    key="analysis_text",
-    height=220,
-    label_visibility="collapsed",
-)
+analysis = st.text_area("Análise", key="analysis_text", height=220, label_visibility="collapsed")
 
 st.subheader("Anexar arquivo (opcional)")
 upl = st.file_uploader(
-    "Anexe .txt / .md / .csv / .pdf / .docx / .xlsx",
+    "Upload",
     type=["txt", "md", "csv", "pdf", "docx", "xlsx"],
     accept_multiple_files=False,
     label_visibility="collapsed",
@@ -172,38 +157,33 @@ with c2:
 with c3:
     st.button("Limpar chat", on_click=clear_chat)
 
-# -------------------------- Run ----------------------------------------------
+# ---------------- Run ----------------
 if go_btn:
-    # ✅ Retrieval: usa SOMENTE o texto do incidente
+    # ✅ Retrieval usa somente o incidente
     query_for_retrieval = (analysis or "").strip()
 
-    # Input do chat pode conter tudo
+    # input do chat pode ter tudo
     user_parts = [draft, analysis] + (ss.upld_texts or [])
     user_input = "\n\n".join([p for p in user_parts if p]).strip()
 
-    # Sempre inicializa para nunca dar NameError
+    # sempre inicializa (evita NameError)
     hits = []
     dic_res, debug_raw = {"WS": [], "Precursores": [], "CP": []}, {}
     ws_matches, prec_matches, cp_matches = [], [], []
 
-    # 1) Recuperação Sphera
+    # 1) filtra df
     loc_col = get_sphera_location_col(df_sph) if isinstance(df_sph, pd.DataFrame) else None
     df_base = filter_sphera(df_sph, locations, substr, years)
 
-    if (
-        isinstance(df_base, pd.DataFrame)
-        and not df_base.empty
-        and E_sph is not None
-        and query_for_retrieval
-    ):
+    # 2) topk
+    if isinstance(df_base, pd.DataFrame) and not df_base.empty and E_sph is not None and query_for_retrieval:
         if "_rowid" not in df_base.columns:
             st.error("Sphera sem coluna _rowid. Verifique load_sphera() em core/data_loader.py.")
         else:
-            # ✅ Alinhamento embeddings com DF filtrado via _rowid
             rowids = df_base["_rowid"].to_numpy()
             E_base = E_sph[rowids]
-
             df_base2 = df_base.reset_index(drop=True)
+
             hits = topk_similar(
                 query_for_retrieval,
                 df_base2,
@@ -215,19 +195,21 @@ if go_btn:
     st.subheader(f"Eventos do Sphera (Top-{min(int(k_sph), len(hits))})")
     if hits:
         df_hits = hits_dataframe(hits, loc_col)
-        # garante EventID na tabela (não índice)
         if "EventID" not in df_hits.columns:
             df_hits.insert(0, "EventID", [h[0] for h in hits])
         st.dataframe(df_hits, width="stretch", hide_index=True)
     else:
         st.info("Nenhum evento recuperado. Ajuste texto/limiar/Top-K.")
 
-    # 2) Matching WS/Prec/CP (determinístico, via embeddings)
+    # 3) dicionários (✅ agora com os 6 argumentos obrigatórios)
     if hits:
         E_ws, L_ws, E_prec, L_prec, E_cp, L_cp = load_dicts()
+
         dic_res, debug_raw = aggregate_dict_matches_over_hits(
             hits,
-            E_ws, L_ws, E_prec, L_prec, E_cp, L_cp,
+            E_ws, L_ws,
+            E_prec, L_prec,
+            E_cp, L_cp,
             per_event_thr=float(per_event_thr),
             support_min=int(support_min),
             agg_mode=str(agg_mode),
@@ -238,18 +220,19 @@ if go_btn:
             top_prec=int(top_prec),
             top_cp=int(top_cp),
         )
+
         ws_matches = dic_res.get("WS", []) if isinstance(dic_res, dict) else []
         prec_matches = dic_res.get("Precursores", []) if isinstance(dic_res, dict) else []
         cp_matches = dic_res.get("CP", []) if isinstance(dic_res, dict) else []
 
-    # Mostra ao usuário o que o algoritmo achou (sem LLM)
+    # Mostra WS determinístico
     st.subheader("Weak Signals (calculado por embeddings, sem LLM)")
     if ws_matches:
         st.dataframe(pd.DataFrame(ws_matches, columns=["Termo", "Score"]), width="stretch", hide_index=True)
     else:
         st.info("Nenhum WS acima do limiar atual.")
 
-    # 3) Contexto para o LLM (mas sem permitir inventar WS)
+    # 4) contexto e guardrails
     allowed_event_ids = _safe_event_ids_from_hits(hits)
 
     ctx_full = "\n".join([
@@ -257,12 +240,11 @@ if go_btn:
         build_dic_matches_md(dic_res),
     ])
 
-    # Lista autoritativa de termos (sem IDs)
     ws_list = [str(t[0]).strip() for t in ws_matches]
     prec_list = [str(t[0]).strip() for t in prec_matches]
     cp_list = [str(t[0]).strip() for t in cp_matches]
 
-    ws_block = "WS_MATCHES (autoritativo; NÃO crie IDs/códigos; use somente estes termos):\n" + (
+    ws_block = "WS_MATCHES (autoritativo; NÃO invente IDs/códigos):\n" + (
         "\n".join([f"- {t}" for t in ws_list]) if ws_list else "- (nenhum)\n"
     )
     prec_block = "PRECURSORES_MATCHES:\n" + (
@@ -274,8 +256,8 @@ if go_btn:
 
     guardrails = (
         "REGRAS OBRIGATÓRIAS:\n"
-        "1) Você NÃO PODE inventar Weak Signals / Precursores / CP. Use APENAS os termos listados em *_MATCHES.\n"
-        "2) NÃO use 'WS ID', 'WS code', 'WS1/WS2' ou qualquer numeração. O dicionário NÃO tem IDs.\n"
+        "1) NÃO invente WS/Precursores/CP. Use APENAS os termos listados em *_MATCHES.\n"
+        "2) NÃO use 'WS ID', 'WS code', 'WS1/WS2' ou numeração. O dicionário não tem IDs.\n"
         "3) Ao citar eventos, use APENAS EventIDs desta lista (não invente): "
         f"{', '.join(allowed_event_ids) if allowed_event_ids else '(nenhum)'}\n"
         "4) Se não houver termos acima do limiar, diga explicitamente que não encontrou.\n"
@@ -295,20 +277,19 @@ if go_btn:
     except Exception as e:
         reply = f"Falha ao consultar o modelo: {e}"
 
-    # Bloqueio simples se o modelo insistir em IDs/códigos
+    # bloqueio simples se insistir em IDs
     rl = reply.lower()
     if ("ws id" in rl) or ("ws code" in rl) or ("ws1" in rl) or ("ws2" in rl) or ("ws3" in rl):
         reply = (
             "⚠️ A resposta do modelo foi bloqueada porque tentou inventar códigos/IDs de WS.\n\n"
             "Use a tabela 'Weak Signals (calculado por embeddings, sem LLM)' como fonte.\n"
-            "Se quiser, posso reformular a resposta só com medidas preventivas e aprendizados usando SOMENTE os WS calculados.\n"
         )
 
     with st.chat_message("assistant"):
         st.markdown(reply)
     ss.chat.append({"role": "assistant", "content": reply})
 
-# -------------------------- History ------------------------------------------
+# ---------------- History ----------------
 if ss.get("chat"):
     st.divider()
     st.subheader("Histórico")
