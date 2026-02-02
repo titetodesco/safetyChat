@@ -188,4 +188,13 @@ if go_btn:
         reply = f"Falha ao consultar o modelo: {e}"
 
     with st.chat_message("assistant"):
-        st.markd
+        st.markdown(reply)
+    ss.chat.append({"role": "assistant", "content": reply})
+
+# ------------- Histórico (últimas 10) -----------------------------------------
+if ss.get("chat"):
+    st.divider()
+    st.subheader("Histórico")
+    for m in ss.chat[-10:]:
+        with st.chat_message("assistant"):
+            st.markdown(m.get("content", ""))
