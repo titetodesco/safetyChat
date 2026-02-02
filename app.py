@@ -9,10 +9,6 @@ ROOT_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-APP_DIR = Path(__file__).resolve().parent
-if str(APP_DIR) not in sys.path:
-    sys.path.insert(0, str(APP_DIR))
-
 import streamlit as st
 import pandas as pd
 
@@ -139,6 +135,10 @@ with c3:
 
 # --------------------- Execução ------------------------------------------------
 if go_btn:
+    # ✅ Retrieval deve usar o texto do incidente (analysis) para não "poluir" o embedding
+    query_for_retrieval = (analysis or "").strip()
+
+    # Entrada do usuário para o chat pode continuar sendo "tudo"
     user_parts = [draft, analysis] + (ss.upld_texts or [])
     user_input = "\n\n".join([p for p in user_parts if p]).strip()
 
@@ -147,11 +147,26 @@ if go_btn:
     df_base = filter_sphera(df_sph, locations, substr, years)
 
     hits = []
-    if isinstance(df_base, pd.DataFrame) and not df_base.empty and E_sph is not None and user_input:
+    if (
+        isinstance(df_base, pd.DataFrame)
+        and not df_base.empty
+        and E_sph is not None
+        and query_for_retrieval
+    ):
+        # ✅ ALINHAMENTO: filtra embeddings com base no _rowid
+        if "_rowid" not in df_base.columns:
+            raise KeyError(
+                "[Sphera] Coluna '_rowid' não encontrada no df_base. "
+                "Garanta que load_sphera() cria _rowid para alinhamento DF<->embeddings."
+            )
+
+        rowids = df_base["_rowid"].to_numpy()
+        E_base = E_sph[rowids]
+
         hits = topk_similar(
-            user_input,
-            df_base,
-            E_sph,
+            query_for_retrieval,   # ✅ usa só o incidente
+            df_base.reset_index(drop=True),
+            E_base,
             topk=int(k_sph),
             min_sim=float(thr_sph),
         )
@@ -182,10 +197,17 @@ if go_btn:
         build_dic_matches_md(dic_res),
     ])
 
+    # ✅ CONTEXTO COMO SYSTEM: reduz duplicação / melhora obediência
     messages = [
-        {"role": "system", "content": "Você é o SAFETY • CHAT. Responda com base nos eventos recuperados e nas regras da organização (ESO)."},
+        {
+            "role": "system",
+            "content": (
+                "Você é o SAFETY • CHAT. Use o CONTEXTO fornecido apenas como suporte factual. "
+                "Não repita blocos ou seções. Não duplique recomendações."
+            ),
+        },
+        {"role": "system", "content": "CONTEXTO:\n" + ctx_full},
         {"role": "user", "content": user_input},
-        {"role": "user", "content": "DADOS DE APOIO (não responda aqui):\n" + ctx_full},
     ]
 
     try:
