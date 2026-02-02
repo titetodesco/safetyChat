@@ -1,7 +1,6 @@
 # app.py
 from __future__ import annotations
 
-# --- Path fix (Streamlit Cloud imports) ---------------------------------------
 import sys
 from pathlib import Path
 
@@ -11,14 +10,14 @@ if str(ROOT_DIR) not in sys.path:
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 
-# --- Config & Core ------------------------------------------------------------
 import config as cfg
 
 from core.data_loader import (
     load_sphera,
-    load_datasets_context,   # carregamos mas NÃO exibimos
-    load_prompts_md,         # compatibilidade (não usado)
+    load_datasets_context,
+    load_prompts_md,
     load_dicts,
 )
 
@@ -34,7 +33,47 @@ from services.upload_extract import extract_any
 from services.llm_client import chat
 
 
-# --- Callbacks (antes dos widgets com keys) -----------------------------------
+# --- Helpers -----------------------------------------------------------------
+def _ensure_eventid_column(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Garante que existe uma coluna EventID (com o ID real do evento).
+    Se existir uma coluna equivalente, renomeia para EventID.
+    """
+    if df is None or df.empty:
+        return df
+
+    if "EventID" in df.columns:
+        return df
+
+    candidates = [
+        "EVENTID", "EVENT_ID", "Event ID", "EVENT ID", "ID", "Id", "id",
+        "EventId", "eventid", "event_id",
+    ]
+    for c in candidates:
+        if c in df.columns:
+            df = df.rename(columns={c: "EventID"})
+            return df
+
+    # se não existir nenhum, cria EventID com base no _rowid (não ideal, mas explícito)
+    if "_rowid" in df.columns:
+        df["EventID"] = df["_rowid"].apply(lambda x: f"ROW_{x}")
+    else:
+        df["EventID"] = [f"ROW_{i}" for i in range(len(df))]
+    return df
+
+
+def _safe_event_ids_from_hits(hits) -> list[str]:
+    ids = []
+    for evid, _, _ in hits:
+        if evid is None:
+            continue
+        s = str(evid).strip()
+        if s and s not in ids:
+            ids.append(s)
+    return ids
+
+
+# --- Callbacks ---------------------------------------------------------------
 def clear_draft():
     st.session_state["draft_prompt"] = ""
     st.session_state["analysis_text"] = ""
@@ -48,29 +87,28 @@ def clear_chat():
             del st.session_state[k]
 
 
-# --- Página -------------------------------------------------------------------
+# --- Page --------------------------------------------------------------------
 st.set_page_config(page_title="SAFETY • CHAT", layout="wide")
 st.title("SAFETY • CHAT")
 
-# --------------------- Estado base (sempre ANTES de widgets) ------------------
 ss = st.session_state
 ss.setdefault("draft_prompt", "")
 ss.setdefault("analysis_text", "")
 ss.setdefault("upld_texts", [])
 ss.setdefault("chat", [])
 
-# --------------------- Carregamentos silenciosos ------------------------------
-_ = load_datasets_context(cfg.DATASETS_CONTEXT_PATH)   # NÃO renderiza
-_ = load_prompts_md(cfg.PROMPTS_MD_PATH)               # NÃO renderiza
+_ = load_datasets_context(cfg.DATASETS_CONTEXT_PATH)
+_ = load_prompts_md(cfg.PROMPTS_MD_PATH)
 
 df_sph, E_sph = load_sphera()
+df_sph = _ensure_eventid_column(df_sph)  # ✅ garante EventID real/consistente
 
-# --------------------- SIDEBAR (parâmetros) -----------------------------------
+# --- Sidebar -----------------------------------------------------------------
 with st.sidebar:
     st.header("Recuperação – Sphera")
-    k_sph   = st.slider("Top-K Sphera", 5, 100, 20, step=5, key="sb_topk_sph")
+    k_sph = st.slider("Top-K Sphera", 5, 100, 20, step=5, key="sb_topk_sph")
     thr_sph = st.slider("Limiar Sphera (cos)", 0.0, 1.0, 0.30, 0.01, key="sb_thr_sph")
-    years   = st.slider("Últimos N anos", 0, 10, 3, 1, key="sb_years")
+    years = st.slider("Últimos N anos", 0, 10, 3, 1, key="sb_years")
 
     st.header("Filtros avançados – Sphera")
     substr = st.text_input("Description contém (substring)", value="", key="sb_substr")
@@ -89,25 +127,29 @@ with st.sidebar:
     support_min = st.slider("Suporte mínimo (nº eventos)", 1, 50, 2, 1, key="sb_support_min")
 
     st.markdown("---")
-    thr_ws   = st.slider("Limiar WS", 0.0, 1.0, 0.30, 0.01, key="sb_thr_ws")
+    thr_ws = st.slider("Limiar WS", 0.0, 1.0, 0.30, 0.01, key="sb_thr_ws")
     thr_prec = st.slider("Limiar Precursores", 0.0, 1.0, 0.30, 0.01, key="sb_thr_prec")
-    thr_cp   = st.slider("Limiar CP", 0.0, 1.0, 0.30, 0.01, key="sb_thr_cp")
+    thr_cp = st.slider("Limiar CP", 0.0, 1.0, 0.30, 0.01, key="sb_thr_cp")
 
-    top_ws   = st.slider("Top-N WS", 1, 50, 10, 1, key="sb_top_ws")
+    top_ws = st.slider("Top-N WS", 1, 50, 10, 1, key="sb_top_ws")
     top_prec = st.slider("Top-N Precursores", 1, 50, 10, 1, key="sb_top_prec")
-    top_cp   = st.slider("Top-N CP", 1, 50, 10, 1, key="sb_top_cp")
+    top_cp = st.slider("Top-N CP", 1, 50, 10, 1, key="sb_top_cp")
 
-# --------------------- Área principal -----------------------------------------
+# --- Main --------------------------------------------------------------------
 st.subheader("Conteúdo do prompt")
 draft = st.text_area(
     "Digite ou carregue um modelo de prompt…",
-    key="draft_prompt", height=220, label_visibility="collapsed",
+    key="draft_prompt",
+    height=220,
+    label_visibility="collapsed",
 )
 
 st.subheader("Texto de análise (para Sphera)")
 analysis = st.text_area(
     "Cole aqui a descrição/evento a analisar…",
-    key="analysis_text", height=220, label_visibility="collapsed",
+    key="analysis_text",
+    height=220,
+    label_visibility="collapsed",
 )
 
 st.subheader("Anexar arquivo (opcional)")
@@ -133,16 +175,16 @@ with c2:
 with c3:
     st.button("Limpar chat", on_click=clear_chat)
 
-# --------------------- Execução ------------------------------------------------
+# --- Run ---------------------------------------------------------------------
 if go_btn:
-    # ✅ Retrieval deve usar o texto do incidente (analysis) para não "poluir" o embedding
+    # ✅ retrieval: usa somente o texto do incidente (analysis)
     query_for_retrieval = (analysis or "").strip()
 
-    # Entrada do usuário para o chat pode continuar sendo "tudo"
+    # chat input pode ter tudo (prompt + analysis + uploads)
     user_parts = [draft, analysis] + (ss.upld_texts or [])
     user_input = "\n\n".join([p for p in user_parts if p]).strip()
 
-    # 1) Recuperação Sphera
+    # 1) Filtra DF
     loc_col = get_sphera_location_col(df_sph) if isinstance(df_sph, pd.DataFrame) else None
     df_base = filter_sphera(df_sph, locations, substr, years)
 
@@ -153,19 +195,21 @@ if go_btn:
         and E_sph is not None
         and query_for_retrieval
     ):
-        # ✅ ALINHAMENTO: filtra embeddings com base no _rowid
+        # ✅ alinhamento embeddings com DF filtrado via _rowid
         if "_rowid" not in df_base.columns:
             raise KeyError(
-                "[Sphera] Coluna '_rowid' não encontrada no df_base. "
-                "Garanta que load_sphera() cria _rowid para alinhamento DF<->embeddings."
+                "[Sphera] Coluna '_rowid' não encontrada. Garanta que load_sphera() cria _rowid."
             )
 
         rowids = df_base["_rowid"].to_numpy()
         E_base = E_sph[rowids]
 
+        # reset index para garantir iloc consistente
+        df_base2 = df_base.reset_index(drop=True)
+
         hits = topk_similar(
-            query_for_retrieval,   # ✅ usa só o incidente
-            df_base.reset_index(drop=True),
+            query_for_retrieval,
+            df_base2,
             E_base,
             topk=int(k_sph),
             min_sim=float(thr_sph),
@@ -173,11 +217,16 @@ if go_btn:
 
     st.subheader(f"Eventos do Sphera (Top-{min(int(k_sph), len(hits))})")
     if hits:
-        st.dataframe(hits_dataframe(hits, loc_col), width="stretch", hide_index=True)
+        # garante que tabela mostre EventID (não index)
+        df_hits = hits_dataframe(hits, loc_col)
+        if "EventID" not in df_hits.columns:
+            # tenta reconstruir EventID a partir do tuple (evid)
+            df_hits.insert(0, "EventID", [h[0] for h in hits])
+        st.dataframe(df_hits, width="stretch", hide_index=True)
     else:
-        st.info("Nenhum evento recuperado. Ajuste o texto/limiar/Top-K.")
+        st.info("Nenhum evento recuperado. Ajuste texto/limiar/Top-K.")
 
-    # 2) Agregação dicionários
+    # 2) Agregação dicionários (WS/Prec/CP) — calculado por embeddings (não pelo LLM)
     dic_res, debug_raw = {}, {}
     if hits:
         E_ws, L_ws, E_prec, L_prec, E_cp, L_cp = load_dicts()
@@ -191,22 +240,26 @@ if go_btn:
             top_ws=int(top_ws), top_prec=int(top_prec), top_cp=int(top_cp),
         )
 
-    # 3) Contexto para o LLM
+    # 3) Contexto e guardrails anti-hallucination
+    allowed_event_ids = _safe_event_ids_from_hits(hits)
+
     ctx_full = "\n".join([
         build_sphera_context_md(hits, loc_col),
         build_dic_matches_md(dic_res),
     ])
 
-    # ✅ CONTEXTO COMO SYSTEM: reduz duplicação / melhora obediência
+    guardrails = (
+        "REGRAS IMPORTANTES:\n"
+        "1) Weak Signals (WS), Precursores e CP DEVEM vir APENAS do CONTEXTO (dicionários). NÃO invente WS.\n"
+        "2) Ao citar eventos, use APENAS EventIDs existentes nesta lista. NÃO invente EventIDs.\n"
+        f"EventIDs permitidos: {', '.join(allowed_event_ids) if allowed_event_ids else '(nenhum)'}\n"
+        "3) Se o CONTEXTO não trouxer WS/Prec/CP suficientes acima do limiar, diga explicitamente que não encontrou.\n"
+    )
+
     messages = [
-        {
-            "role": "system",
-            "content": (
-                "Você é o SAFETY • CHAT. Use o CONTEXTO fornecido apenas como suporte factual. "
-                "Não repita blocos ou seções. Não duplique recomendações."
-            ),
-        },
-        {"role": "system", "content": "CONTEXTO:\n" + ctx_full},
+        {"role": "system", "content": "Você é o SAFETY • CHAT. Seja preciso e não alucine."},
+        {"role": "system", "content": guardrails},
+        {"role": "system", "content": "CONTEXTO (use como fonte):\n" + ctx_full},
         {"role": "user", "content": user_input},
     ]
 
@@ -220,7 +273,7 @@ if go_btn:
         st.markdown(reply)
     ss.chat.append({"role": "assistant", "content": reply})
 
-# ------------- Histórico (últimas 10) -----------------------------------------
+# --- History -----------------------------------------------------------------
 if ss.get("chat"):
     st.divider()
     st.subheader("Histórico")
