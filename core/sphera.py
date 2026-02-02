@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 import numpy as np
 import pandas as pd
-import streamlit as st
 import os
 
 # ---------------------------------------------------------------------
@@ -23,10 +22,6 @@ from core.encoding import ensure_st_encoder, encode_query
 def _l2_normalize_vec(v: np.ndarray) -> np.ndarray:
     n = float(np.linalg.norm(v)) + 1e-12
     return v / n
-
-def _l2_normalize_mat(M: np.ndarray) -> np.ndarray:
-    norms = np.linalg.norm(M, axis=1, keepdims=True) + 1e-12
-    return M / norms
 
 
 def get_sphera_location_col(df: pd.DataFrame | None) -> Optional[str]:
@@ -51,40 +46,3 @@ def filter_sphera(
 
     loc_col = get_sphera_location_col(out)
     if locations and loc_col:
-        out = out[out[loc_col].astype(str).isin(set(locations))]
-
-    if substr and "Description" in out.columns:
-        out = out[out["Description"].astype(str).str.contains(substr, case=False, na=False)]
-
-    # Obs: filtro por "years" depende de existir coluna de data. Mantive como no seu código (não aplicava).
-    return out if not out.empty else df
-
-
-def topk_similar(
-    query_text: str,
-    df: pd.DataFrame,
-    E: np.ndarray,
-    topk: int = 20,
-    min_sim: float = 0.30,
-) -> List[Tuple[str, float, pd.Series]]:
-    if E is None or getattr(E, "size", 0) == 0:
-        return []
-
-    model_name = os.getenv("ST_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
-
-    enc = ensure_st_encoder(model_name)
-    qv = encode_query(query_text, enc).astype(np.float32)
-    qv /= (np.linalg.norm(qv) + 1e-12)
-
-    sims = (E @ qv).reshape(-1)
-    idx = np.argsort(-sims)[: int(topk)]
-
-    out: List[Tuple[str, float, pd.Series]] = []
-    for i in idx:
-        s = float(sims[i])
-        if s < float(min_sim):
-            continue
-        row = df.iloc[int(i)]
-        evid = str(row.get("EventID") or row.get("EVENTID") or row.get("ID") or i)
-        out.append((evid, s, row))
-    return out
