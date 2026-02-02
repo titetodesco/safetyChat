@@ -5,6 +5,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+ROOT_DIR = Path(__file__).resolve().parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 APP_DIR = Path(__file__).resolve().parent
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
@@ -31,12 +35,7 @@ from core.context_builder import (
 from core.dictionaries import aggregate_dict_matches_over_hits
 
 from services.upload_extract import extract_any
-
-# Import resiliente do cliente LLM
-try:
-    from services.llm_client import chat
-except Exception:
-    from llm_client import chat
+from services.llm_client import chat
 
 
 # --- Callbacks (antes dos widgets com keys) -----------------------------------
