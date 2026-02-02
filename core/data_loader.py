@@ -1,34 +1,29 @@
-# core/data_loader.py
 from __future__ import annotations
-import json
-from pathlib import Path
-from typing import Optional, Tuple, List
 
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional, Tuple
+
+import json
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 from config import (
-    # Pastas & docs
-    DATASETS_CONTEXT_PATH, PROMPTS_MD_PATH,
-
-    # Sphera
+    DICT_LANG,
     SPH_PQ_PATH, SPH_NPZ_PATH,
-
-    # GoSee
     GOSEE_PQ_PATH, GOSEE_NPZ_PATH,
-
-    # Incidents / History
     INC_JSONL_PATH, INC_NPZ_PATH, INC_PQ_PATH,
-
-    # Dicionários
     WS_NPZ, WS_LBL_PARQ, WS_LBL_JSONL,
     PREC_NPZ, PREC_LBL_PARQ, PREC_LBL_JSONL,
     CP_NPZ_MAIN, CP_NPZ_ALT, CP_LBL_PARQ, CP_LBL_JSONL,
 )
 
-# ---------------- Utilitários de IO ----------------
-def _coerce_path(p) -> Path | None:
+
+# ---------------------------------------------------------------------
+# Utilitários de IO
+# ---------------------------------------------------------------------
+def _coerce_path(p: Optional[Path]) -> Optional[Path]:
     if p is None:
         return None
     if isinstance(p, Path):
@@ -38,212 +33,218 @@ def _coerce_path(p) -> Path | None:
     except Exception:
         return None
 
-def _l2_normalize(mat: np.ndarray) -> np.ndarray:
-    if mat is None:
-        return None
-    norms = np.linalg.norm(mat, axis=1, keepdims=True) + 1e-12
-    return mat / norms
 
-@st.cache_data(show_spinner=False)
-def _load_npz_embeddings_strict(path: Path) -> np.ndarray:
-    """
-    Carrega embeddings NUMPY (strict): falha claramente se ausente/invalid.
-    Espera-se chave 'embeddings' OU (arr_0 único) OU primeira matriz 2D encontrada.
-    Retorna float32 e L2-normalizado por linha.
-    """
-    if not isinstance(path, Path):
-        raise FileNotFoundError("[RAG] Caminho NPZ inválido (None ou não-Path).")
-    if not path.exists():
-        raise FileNotFoundError(f"[RAG] NPZ não encontrado: {path}")
-
-    with np.load(path, allow_pickle=False) as npz:
-        if "embeddings" in npz.files:
-            arr = npz["embeddings"]
-        elif "arr_0" in npz.files and len(npz.files) == 1:
-            arr = npz["arr_0"]
-        else:
-            candidates = [k for k in npz.files if np.asarray(npz[k]).ndim == 2]
-            if not candidates:
-                raise ValueError(f"[RAG] NPZ {path} sem matriz 2D de embeddings.")
-            arr = np.asarray(npz[candidates[0]])
-
-    if not isinstance(arr, np.ndarray) or arr.ndim != 2:
-        raise ValueError(f"[RAG] Embeddings inválidos em {path} (esperado 2D).")
-
-    arr = arr.astype(np.float32, copy=False)
-    return _l2_normalize(arr)
-
-@st.cache_data(show_spinner=False)
 def _load_parquet(path: Optional[Path]) -> Optional[pd.DataFrame]:
-    if not isinstance(path, Path):
+    path = _coerce_path(path)
+    if not path:
         return None
     if not path.exists():
         return None
-    try:
-        return pd.read_parquet(path)
-    except Exception:
-        return None
+    return pd.read_parquet(path)
 
-@st.cache_data(show_spinner=False)
+
 def _load_jsonl(path: Optional[Path]) -> Optional[pd.DataFrame]:
-    if not isinstance(path, Path):
+    path = _coerce_path(path)
+    if not path:
         return None
     if not path.exists():
         return None
-    try:
-        rows: List[dict] = []
-        with path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                rows.append(json.loads(line))
-        return pd.DataFrame(rows)
-    except Exception:
+
+    rows = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            rows.append(json.loads(line))
+    if not rows:
         return None
+    return pd.DataFrame(rows)
 
-# ---------------- Carregadores de Docs ----------------
 
-@st.cache_data(show_spinner=False)
-def load_datasets_context(path: Optional[Path]) -> Optional[str]:
-    if isinstance(path, Path) and path.exists():
-        try:
-            return path.read_text(encoding="utf-8")
-        except Exception:
-            return None
-    return None
+def _load_npz_embeddings_strict(path: Optional[Path]) -> np.ndarray:
+    path = _coerce_path(path)
+    if not path or not path.exists():
+        raise FileNotFoundError(f"Embeddings NPZ não encontrado: {path}")
 
-@st.cache_data(show_spinner=False)
-def load_prompts_md(path: Optional[Path]) -> Optional[str]:
-    if isinstance(path, Path) and path.exists():
-        try:
-            return path.read_text(encoding="utf-8")
-        except Exception:
-            return None
-    return None
+    data = np.load(path, allow_pickle=False)
+    # tenta achar a primeira matriz 2D no npz
+    for k in data.files:
+        arr = data[k]
+        if isinstance(arr, np.ndarray) and arr.ndim == 2:
+            return arr.astype(np.float32, copy=False)
 
-# ---------------- Carregadores de Bases com Embeddings ----------------
+    raise ValueError(f"NPZ inválido (nenhuma matriz 2D encontrada): {path}")
 
-@st.cache_data(show_spinner=False)
-def load_sphera() -> tuple[pd.DataFrame, np.ndarray]:
-    if SPH_PQ_PATH is None or not isinstance(SPH_PQ_PATH, Path):
-        raise ValueError("[RAG] SPH_PQ_PATH inválido.")
-    df = pd.read_parquet(SPH_PQ_PATH).reset_index(drop=True)
-    df["_rowid"] = np.arange(len(df), dtype=np.int32)
 
-    if SPH_NPZ_PATH is None or not isinstance(SPH_NPZ_PATH, Path):
-        raise ValueError("[RAG] SPH_NPZ_PATH inválido.")
-    E = _load_npz_embeddings_strict(SPH_NPZ_PATH)
-
-    if E.shape[0] != len(df):
-        raise ValueError(f"[RAG] Mismatch DF/Embeddings: len(df)={len(df)} vs E.shape[0]={E.shape[0]}")
-
-    # Description obrigatória
-    if "Description" not in df.columns:
-        for c in df.columns:
-            if c.lower() == "description":
-                df.rename(columns={c: "Description"}, inplace=True)
-                break
-        if "Description" not in df.columns:
-            raise KeyError("[RAG] Coluna 'Description' não encontrada no Sphera.")
-
-    # Location tolerante -> padroniza em LOCATION se achar; senão cria
-    loc_candidates = ["LOCATION", "Location", "local", "Local", "Área", "Area"]
-    loc_col = None
-    for c in loc_candidates:
-        if c in df.columns:
-            loc_col = c
-            break
-    if loc_col is None:
-        df["LOCATION"] = ""
-    else:
-        if loc_col != "LOCATION":
-            df.rename(columns={loc_col: "LOCATION"}, inplace=True)
-
-    return df, E
-
-@st.cache_data(show_spinner=False)
-def load_gosee() -> Tuple[pd.DataFrame, np.ndarray | None]:
-    df = _load_parquet(GOSEE_PQ_PATH)
-    if df is None or df.empty:
-        return pd.DataFrame(), None
-
-    try:
-        E = _load_npz_embeddings_strict(GOSEE_NPZ_PATH)
-    except Exception:
-        return df, None
-
-    if len(df) != E.shape[0]:
-        m = min(len(df), E.shape[0])
-        df = df.iloc[:m].reset_index(drop=True)
-        E = E[:m, :]
-    return df, E
-
-@st.cache_data(show_spinner=False)
-def load_incidents() -> Tuple[pd.DataFrame, np.ndarray | None]:
-    df = None
-    if isinstance(INC_PQ_PATH, Path):
-        df = _load_parquet(INC_PQ_PATH)
-    if df is None or df.empty:
-        df = _load_jsonl(INC_JSONL_PATH)
-    if df is None:
-        return pd.DataFrame(), None
-
-    try:
-        E = _load_npz_embeddings_strict(INC_NPZ_PATH)
-    except Exception:
-        return df, None
-
-    if len(df) != E.shape[0]:
-        m = min(len(df), E.shape[0])
-        df = df.iloc[:m].reset_index(drop=True)
-        E = E[:m, :]
-    return df, E
-
-# ---------------- Rótulos de dicionários + Embeddings obrigatórios ----------------
-
-@st.cache_data(show_spinner=False)
 def _load_labels_any(parquet_path: Optional[Path], jsonl_path: Optional[Path]) -> pd.DataFrame:
     df = _load_parquet(parquet_path)
     if df is not None:
-        return df
+        return df.reset_index(drop=True)
     df = _load_jsonl(jsonl_path)
     if df is not None:
+        return df.reset_index(drop=True)
+    raise FileNotFoundError(
+        f"Rótulos não encontrados (nem Parquet nem JSONL): {parquet_path} / {jsonl_path}"
+    )
+
+
+# ---------------------------------------------------------------------
+# Normalização de labels (CRÍTICO para evitar WS “inventado”)
+# Garante que exista df['label'] com o texto correto (preferindo PT).
+# ---------------------------------------------------------------------
+def _pick_first_existing_col(df: pd.DataFrame, cols: list[str]) -> Optional[str]:
+    for c in cols:
+        if c in df.columns:
+            return c
+    return None
+
+
+def _normalize_labels_df(df: pd.DataFrame, family: str, lang: str = "pt") -> pd.DataFrame:
+    """
+    Cria/garante coluna 'label' contendo o termo a ser usado no matching e exibido ao LLM.
+    - Prefere PT quando lang="pt"
+    - Se já existir 'label', mantém.
+    """
+    if df is None or df.empty:
         return df
-    raise FileNotFoundError(f"Rótulos não encontrados (Parquet nem JSONL): {parquet_path} / {jsonl_path}")
+
+    df = df.copy()
+
+    # Se já tem coluna label, só garante string/strip
+    if "label" in df.columns:
+        df["label"] = df["label"].astype(str).str.strip()
+        return df
+
+    # Possíveis nomes comuns vindos de parquet/jsonl/xlsx processados
+    # (ordem importa!)
+    if lang == "pt":
+        preferred = [
+            "Termo (PT)", "Termo_PT", "term_pt", "pt", "texto_pt", "descricao_pt", "Descrição (PT)", "descricao",
+            "term", "Term", "LABEL", "label",
+            "Termo (EN)", "Termo_EN", "term_en", "en", "texto_en", "description",
+        ]
+    else:
+        preferred = [
+            "Termo (EN)", "Termo_EN", "term_en", "en", "texto_en", "description",
+            "term", "Term", "LABEL", "label",
+            "Termo (PT)", "Termo_PT", "term_pt", "pt", "texto_pt", "descricao",
+        ]
+
+    col = _pick_first_existing_col(df, preferred)
+    if col is None:
+        # fallback: primeira coluna
+        col = df.columns[0]
+
+    df["label"] = df[col].astype(str).str.strip()
+    return df
+
+
+def _align_embeddings_and_labels(E: np.ndarray, L: pd.DataFrame, what: str) -> Tuple[np.ndarray, pd.DataFrame]:
+    if E is None or L is None or len(L) == 0:
+        return E, L
+    m = min(E.shape[0], len(L))
+    if E.shape[0] != len(L):
+        # corta para o menor para evitar desalinhamento silencioso
+        E = E[:m, :]
+        L = L.iloc[:m].reset_index(drop=True)
+    return E, L
+
+
+# ---------------------------------------------------------------------
+# Loaders principais (cacheados)
+# ---------------------------------------------------------------------
+@st.cache_data(show_spinner=False)
+def load_sphera() -> Tuple[pd.DataFrame, np.ndarray]:
+    df = _load_parquet(SPH_PQ_PATH)
+    if df is None:
+        raise FileNotFoundError(f"Sphera parquet não encontrado: {SPH_PQ_PATH}")
+
+    E = _load_npz_embeddings_strict(SPH_NPZ_PATH)
+
+    # RowID estável para alinhamento com embeddings
+    if "_rowid" not in df.columns:
+        df = df.reset_index(drop=True).copy()
+        df["_rowid"] = np.arange(len(df), dtype=np.int64)
+
+    # sanity: corta se mismatch
+    if E.shape[0] != len(df):
+        m = min(E.shape[0], len(df))
+        df = df.iloc[:m].reset_index(drop=True)
+        df["_rowid"] = np.arange(len(df), dtype=np.int64)
+        E = E[:m, :]
+
+    return df, E
+
+
+@st.cache_data(show_spinner=False)
+def load_gosee() -> Tuple[pd.DataFrame, np.ndarray]:
+    df = _load_parquet(GOSEE_PQ_PATH)
+    if df is None:
+        raise FileNotFoundError(f"GoSee parquet não encontrado: {GOSEE_PQ_PATH}")
+    E = _load_npz_embeddings_strict(GOSEE_NPZ_PATH)
+    m = min(len(df), E.shape[0])
+    return df.iloc[:m].reset_index(drop=True), E[:m, :]
+
+
+@st.cache_data(show_spinner=False)
+def load_history() -> Tuple[pd.DataFrame, np.ndarray]:
+    # aceita parquet ou jsonl
+    df = _load_parquet(INC_PQ_PATH) if INC_PQ_PATH else None
+    if df is None:
+        df = _load_jsonl(INC_JSONL_PATH)
+    if df is None:
+        raise FileNotFoundError(f"Histórico não encontrado: {INC_PQ_PATH} / {INC_JSONL_PATH}")
+
+    E = _load_npz_embeddings_strict(INC_NPZ_PATH)
+    m = min(len(df), E.shape[0])
+    return df.iloc[:m].reset_index(drop=True), E[:m, :]
+
+
+@st.cache_data(show_spinner=False)
+def load_prompts_md(path: Path):
+    # compatibilidade: app não usa diretamente, mas mantém para não quebrar imports
+    path = _coerce_path(path)
+    if not path or not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+@st.cache_data(show_spinner=False)
+def load_datasets_context(path: Path):
+    path = _coerce_path(path)
+    if not path or not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8")
+
 
 @st.cache_data(show_spinner=False)
 def load_dicts():
     """
     Retorna: (E_ws, L_ws, E_prec, L_prec, E_cp, L_cp)
-    Nesta aplicação, os NPZ são **obrigatórios** para WS, Precursores e CP.
+    Nesta aplicação, os NPZ são obrigatórios para WS, Precursores e CP.
+    E garante L_* com coluna 'label' (preferindo DICT_LANG).
     """
     # WS
     E_ws = _load_npz_embeddings_strict(WS_NPZ)
     L_ws = _load_labels_any(WS_LBL_PARQ, WS_LBL_JSONL)
+    L_ws = _normalize_labels_df(L_ws, family="ws", lang=DICT_LANG)
+    E_ws, L_ws = _align_embeddings_and_labels(E_ws, L_ws, "WS")
 
     # Precursores
     E_prec = _load_npz_embeddings_strict(PREC_NPZ)
     L_prec = _load_labels_any(PREC_LBL_PARQ, PREC_LBL_JSONL)
+    L_prec = _normalize_labels_df(L_prec, family="prec", lang=DICT_LANG)
+    E_prec, L_prec = _align_embeddings_and_labels(E_prec, L_prec, "Precursores")
 
     # CP
     cp_npz_path = CP_NPZ_MAIN if isinstance(CP_NPZ_MAIN, Path) else None
     if cp_npz_path is None and isinstance(CP_NPZ_ALT, Path):
         cp_npz_path = CP_NPZ_ALT
-    if cp_npz_path is None:
-        raise FileNotFoundError("[RAG] CP_NPZ_MAIN/ALT inválido (None).")
+
     E_cp = _load_npz_embeddings_strict(cp_npz_path)
     L_cp = _load_labels_any(CP_LBL_PARQ, CP_LBL_JSONL)
-
-    # Ajustes defensivos de tamanho (se necessário)
-    def _align(E: np.ndarray, L: pd.DataFrame):
-        m = min(E.shape[0], len(L))
-        if E.shape[0] != m or len(L) != m:
-            return E[:m, :], L.iloc[:m].reset_index(drop=True)
-        return E, L
-
-    E_ws, L_ws     = _align(E_ws, L_ws)
-    E_prec, L_prec = _align(E_prec, L_prec)
-    E_cp, L_cp     = _align(E_cp, L_cp)
+    L_cp = _normalize_labels_df(L_cp, family="cp", lang=DICT_LANG)
+    E_cp, L_cp = _align_embeddings_and_labels(E_cp, L_cp, "CP")
 
     return E_ws, L_ws, E_prec, L_prec, E_cp, L_cp
