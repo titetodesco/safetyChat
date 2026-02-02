@@ -5,9 +5,6 @@ import numpy as np
 import pandas as pd
 import os
 
-# ---------------------------------------------------------------------
-# Nome do modelo de embeddings a partir do config (com fallbacks)
-# ---------------------------------------------------------------------
 try:
     from config import OLLAMA_EMBEDDING_MODEL as EMBED_MODEL_NAME
 except Exception:
@@ -19,9 +16,35 @@ except Exception:
 from core.encoding import ensure_st_encoder, encode_query
 
 
+def _is_missing(x) -> bool:
+    try:
+        return x is None or (isinstance(x, float) and np.isnan(x))
+    except Exception:
+        return x is None
+
+
 def _l2_normalize_vec(v: np.ndarray) -> np.ndarray:
     n = float(np.linalg.norm(v)) + 1e-12
     return v / n
+
+
+def _extract_event_id(row: pd.Series, fallback: int) -> str:
+    """
+    Extrai um EventID real de uma linha do Sphera.
+    Evita retornar índice/rowid como "EventID" quando a coluna não existe ou está vazia.
+    """
+    candidates = [
+        "EventID", "EVENTID", "EVENT_ID", "Event ID", "EVENT ID", "ID", "Id", "id",
+        "EventId", "EVENTId", "eventid", "event_id",
+    ]
+    for k in candidates:
+        if k in row.index:
+            v = row.get(k)
+            if not _is_missing(v):
+                return str(v).strip()
+
+    # fallback: não temos EventID — devolve algo claro, mas não engana como EventID
+    return f"ROW_{fallback}"
 
 
 def get_sphera_location_col(df: pd.DataFrame | None) -> Optional[str]:
@@ -63,27 +86,24 @@ def topk_similar(
     min_sim: float = 0.30,
 ) -> List[Tuple[str, float, pd.Series]]:
     """
-    Retorna lista de (EventID, similaridade, row).
-    IMPORTANTE: E precisa estar alinhado a df (mesmo número de linhas e mesma ordem).
+    Retorna lista de (EventID_str, cos_sim, row_series).
+    IMPORTANTE: E precisa estar alinhado com df (mesma ordem e mesmo número de linhas).
     """
     if E is None or getattr(E, "size", 0) == 0:
         return []
-
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return []
 
-    # ✅ check defensivo: impede resultados sem sentido / IndexError
+    # ✅ proteção contra desalinhamento
     if E.shape[0] != len(df):
         raise ValueError(
-            f"[Sphera] Embeddings desalinhados com o DataFrame: "
-            f"E.shape[0]={E.shape[0]} vs len(df)={len(df)}. "
-            f"Você deve filtrar E junto com df (ex.: usando _rowid)."
+            f"[Sphera] Embeddings desalinhados: E.shape[0]={E.shape[0]} vs len(df)={len(df)}. "
+            f"Filtre E junto com df (ex.: usando _rowid)."
         )
 
-    # usa o modelo definido no config, mas permite override por env ST_MODEL_NAME
     model_name = os.getenv(
         "ST_MODEL_NAME",
-        f"sentence-transformers/{EMBED_MODEL_NAME}" if "/" not in EMBED_MODEL_NAME else EMBED_MODEL_NAME
+        "sentence-transformers/all-MiniLM-L6-v2"
     )
 
     enc = ensure_st_encoder(model_name)
@@ -99,6 +119,6 @@ def topk_similar(
         if s < float(min_sim):
             continue
         row = df.iloc[int(i)]
-        evid = str(row.get("EventID") or row.get("EVENTID") or row.get("ID") or i)
+        evid = _extract_event_id(row, int(i))
         out.append((evid, s, row))
     return out
