@@ -239,6 +239,35 @@ if go_btn:
             thr_ws=float(thr_ws), thr_prec=float(thr_prec), thr_cp=float(thr_cp),
             top_ws=int(top_ws), top_prec=int(top_prec), top_cp=int(top_cp),
         )
+    allowed_ws_terms = [str(t[0]).strip() for t in ws_matches]
+    allowed_prec_terms = [str(t[0]).strip() for t in prec_matches]
+    allowed_cp_terms = [str(t[0]).strip() for t in cp_matches]
+    
+    guardrails = (
+        "REGRAS IMPORTANTES (OBRIGATÓRIAS):\n"
+        "1) Você NÃO PODE inventar Weak Signals. Use APENAS os termos listados em WS_MATCHES.\n"
+        "2) NÃO crie colunas 'WS ID', 'WS code' ou números. O dicionário não tem IDs.\n"
+        "3) Se WS_MATCHES estiver vazio ou insuficiente, diga explicitamente: 'não há WS acima do limiar'.\n"
+        "4) Precursores/CP: use APENAS os termos listados em PRECURSORES_MATCHES e CP_MATCHES.\n"
+    )
+    
+    ws_block = "WS_MATCHES (autoritativo):\n" + (
+        "\n".join([f"- {t} (score={s:.3f})" for t, s in ws_matches])
+        if ws_matches else
+        "- (nenhum)\n"
+    )
+    
+    prec_block = "PRECURSORES_MATCHES (autoritativo):\n" + (
+        "\n".join([f"- {t} (score={s:.3f})" for t, s in prec_matches])
+        if prec_matches else
+        "- (nenhum)\n"
+    )
+    
+    cp_block = "CP_MATCHES (autoritativo):\n" + (
+        "\n".join([f"- {t} (score={s:.3f})" for t, s in cp_matches])
+        if cp_matches else
+        "- (nenhum)\n"
+    )
 
     # 3) Contexto e guardrails anti-hallucination
     allowed_event_ids = _safe_event_ids_from_hits(hits)
@@ -257,9 +286,10 @@ if go_btn:
     )
 
     messages = [
-        {"role": "system", "content": "Você é o SAFETY • CHAT. Seja preciso e não alucine."},
+        {"role": "system", "content": "Você é o SAFETY • CHAT. Seja preciso. Não alucine."},
         {"role": "system", "content": guardrails},
-        {"role": "system", "content": "CONTEXTO (use como fonte):\n" + ctx_full},
+        {"role": "system", "content": ws_block + "\n\n" + prec_block + "\n\n" + cp_block},
+        {"role": "system", "content": "CONTEXTO (eventos recuperados):\n" + ctx_full},
         {"role": "user", "content": user_input},
     ]
 
