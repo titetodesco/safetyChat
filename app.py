@@ -73,6 +73,9 @@ def clear_draft():
 
 def clear_chat():
     st.session_state["chat"] = []
+    st.session_state["draft_prompt"] = ""
+    st.session_state["analysis_text"] = ""
+    st.session_state["upld_texts"] = []
     for k in ["messages", "history", "chat_messages", "last_reply", "last_ctx", "last_hits"]:
         if k in st.session_state:
             del st.session_state[k]
@@ -116,12 +119,12 @@ with st.sidebar:
     st.header("Agregação sobre eventos recuperados (Sphera)")
     agg_mode = st.selectbox("Agregação", options=["max", "mean"], index=0, key="sb_agg_mode")
     per_event_thr = st.slider("Limiar por evento (dicionários)", 0.0, 1.0, 0.30, 0.01, key="sb_per_event_thr")
-    support_min = st.slider("Suporte mínimo (nº eventos)", 1, 50, 20, 1, key="sb_support_min")
+    support_min = st.slider("Suporte mínimo (nº eventos)", 1, 50, 2, 1, key="sb_support_min")
 
     st.markdown("---")
-    thr_ws = st.slider("Limiar WS", 0.0, 1.0, 0.50, 0.01, key="sb_thr_ws")
-    thr_prec = st.slider("Limiar Precursores", 0.0, 1.0, 0.40, 0.01, key="sb_thr_prec")
-    thr_cp = st.slider("Limiar CP", 0.0, 1.0, 0.30, 0.01, key="sb_thr_cp")
+    thr_ws = st.slider("Limiar WS", 0.0, 1.0, 0.20, 0.01, key="sb_thr_ws")
+    thr_prec = st.slider("Limiar Precursores", 0.0, 1.0, 0.20, 0.01, key="sb_thr_prec")
+    thr_cp = st.slider("Limiar CP", 0.0, 1.0, 0.20, 0.01, key="sb_thr_cp")
 
     top_ws = st.slider("Top-N WS", 1, 50, 10, 1, key="sb_top_ws")
     top_prec = st.slider("Top-N Precursores", 1, 50, 10, 1, key="sb_top_prec")
@@ -129,15 +132,27 @@ with st.sidebar:
 
 # ---------------- Main ----------------
 st.subheader("Conteúdo do prompt")
-draft = st.text_area("Prompt", key="draft_prompt", height=220, label_visibility="collapsed")
+draft = st.text_area(
+    "Prompt", 
+    key="draft_prompt", 
+    height=220, 
+    label_visibility="collapsed",
+    placeholder="Digite aqui suas instruções para o modelo (ex: 'Analise os eventos', 'Liste WS', etc.)..."
+)
 
 st.subheader("Texto de análise (para Sphera)")
-analysis = st.text_area("Análise", key="analysis_text", height=220, label_visibility="collapsed")
+analysis = st.text_area(
+    "Análise", 
+    key="analysis_text", 
+    height=220, 
+    label_visibility="collapsed",
+    placeholder="Digite aqui a descrição do incidente/cenário para buscar eventos similares no Sphera..."
+)
 
 st.subheader("Anexar arquivo (opcional)")
 upl = st.file_uploader(
     "Upload",
-    type=["txt", "md", "csv", "pdf", "docx", "xlsx"],
+    type=["txt", "md", "pdf", "docx"],
     accept_multiple_files=False,
     label_visibility="collapsed",
 )
@@ -145,9 +160,12 @@ if upl is not None:
     uploaded_text = extract_any(upl)
     if uploaded_text.strip():
         ss.upld_texts.append(uploaded_text)
-        st.success(f"Upload recebido: {upl.name}")
+        st.success(f"✅ Upload recebido: {upl.name} ({len(uploaded_text)} caracteres)")
     else:
-        st.warning(f"Não foi possível extrair texto de {upl.name}.")
+        st.warning(
+            f"⚠️ Não foi possível extrair texto de {upl.name}. "
+            "Possíveis causas: PDF escaneado/imagem, arquivo protegido ou formato não suportado. "
+         )
 
 c1, c2, c3 = st.columns([1, 1, 1])
 with c1:
@@ -159,10 +177,11 @@ with c3:
 
 # ---------------- Run ----------------
 if go_btn:
-    # ✅ Retrieval usa somente o incidente
-    query_for_retrieval = (analysis or "").strip()
+    # ✅ Retrieval usa texto de análise + uploads (para buscar eventos semelhantes)
+    retrieval_parts = [analysis] + (ss.upld_texts or [])
+    query_for_retrieval = "\n\n".join([p for p in retrieval_parts if p]).strip()
 
-    # input do chat pode ter tudo
+    # input do chat pode ter tudo (prompt + análise + uploads)
     user_parts = [draft, analysis] + (ss.upld_texts or [])
     user_input = "\n\n".join([p for p in user_parts if p]).strip()
 
@@ -197,7 +216,7 @@ if go_btn:
         df_hits = hits_dataframe(hits, loc_col)
         if "EventID" not in df_hits.columns:
             df_hits.insert(0, "EventID", [h[0] for h in hits])
-        st.dataframe(df_hits, width="stretch", hide_index=True)
+        st.dataframe(df_hits, use_container_width=True, hide_index=True)
     else:
         st.info("Nenhum evento recuperado. Ajuste texto/limiar/Top-K.")
 
@@ -228,7 +247,7 @@ if go_btn:
     # Mostra WS determinístico
     st.subheader("Weak Signals (calculado por embeddings, sem LLM)")
     if ws_matches:
-        st.dataframe(pd.DataFrame(ws_matches, columns=["Termo", "Score"]), width="stretch", hide_index=True)
+        st.dataframe(pd.DataFrame(ws_matches, columns=["Sinais Fracos", "Similaridade"]), use_container_width=True, hide_index=True)
     else:
         st.info("Nenhum WS acima do limiar atual.")
 
@@ -256,11 +275,13 @@ if go_btn:
 
     guardrails = (
         "REGRAS OBRIGATÓRIAS:\n"
-        "1) NÃO invente WS/Precursores/CP. Use APENAS os termos listados em *_MATCHES.\n"
-        "2) NÃO use 'WS ID', 'WS code', 'WS1/WS2' ou numeração. O dicionário não tem IDs.\n"
-        "3) Ao citar eventos, use APENAS EventIDs desta lista (não invente): "
+        f"1) Considere TODOS os eventos Sphera recuperados (limiar de recuperação: ≥ {thr_sph:.2f}). "
+        "NÃO crie ou aplique novos limiares arbitrários (como 0,60 ou outros valores).\n"
+        "2) NÃO invente WS/Precursores/CP. Use APENAS os termos listados em *_MATCHES.\n"
+        "3) NÃO use 'WS ID', 'WS code', 'WS1/WS2' ou numeração. O dicionário não tem IDs.\n"
+        "4) Ao citar eventos, use APENAS EventIDs desta lista (não invente): "
         f"{', '.join(allowed_event_ids) if allowed_event_ids else '(nenhum)'}\n"
-        "4) Se não houver termos acima do limiar, diga explicitamente que não encontrou.\n"
+        "5) Se não houver termos acima do limiar, diga explicitamente que não encontrou.\n"
     )
 
     messages = [

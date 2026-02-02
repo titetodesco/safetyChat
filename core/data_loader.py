@@ -117,24 +117,31 @@ def _normalize_labels_df(df: pd.DataFrame, family: str, lang: str = "pt") -> pd.
         return df
 
     # Possíveis nomes comuns vindos de parquet/jsonl/xlsx processados
-    # (ordem importa!)
+    # (ordem importa! Inclui variações com espaços e parênteses)
     if lang == "pt":
         preferred = [
-            "Termo (PT)", "Termo_PT", "term_pt", "pt", "texto_pt", "descricao_pt", "Descrição (PT)", "descricao",
-            "term", "Term", "LABEL", "label",
-            "Termo (EN)", "Termo_EN", "term_en", "en", "texto_en", "description",
+            "text",  # formato do ws_embeddings_pt (id, text, lang)
+            "Termo (PT)", "Termo(PT)", "Termo_PT", "term_pt", "pt", "texto_pt", "descricao_pt", "Descrição (PT)",
+            "descricao", "term", "Term", "LABEL", "label",
+            "Termo (EN)", "Termo(EN)", "Termo_EN", "term_en", "en", "texto_en", "description",
         ]
     else:
         preferred = [
-            "Termo (EN)", "Termo_EN", "term_en", "en", "texto_en", "description",
+            "text",  # formato do ws_embeddings_pt
+            "Termo (EN)", "Termo(EN)", "Termo_EN", "term_en", "en", "texto_en", "description",
             "term", "Term", "LABEL", "label",
-            "Termo (PT)", "Termo_PT", "term_pt", "pt", "texto_pt", "descricao",
+            "Termo (PT)", "Termo(PT)", "Termo_PT", "term_pt", "pt", "texto_pt", "descricao",
         ]
 
     col = _pick_first_existing_col(df, preferred)
     if col is None:
-        # fallback: primeira coluna
-        col = df.columns[0]
+        # fallback: primeira coluna não-índice
+        for c in df.columns:
+            if c not in ["index", "Index", "INDEX", "_rowid", "_index", "id", "ID", "lang"]:
+                col = c
+                break
+        if col is None:
+            col = df.columns[0]
 
     df["label"] = df[col].astype(str).str.strip()
     return df

@@ -7,9 +7,24 @@ from core.encoding import ensure_st_encoder, encode_texts
 import os
 
 def _labels_col(df: pd.DataFrame) -> str:
-    for c in ["label","LABEL","term","Term","descricao","description","DESC","WS","Precursor","CP"]:
+    """Detecta qual coluna usar como rótulo/label."""
+    # Preferência: se já tem 'label', usa
+    if "label" in df.columns:
+        return "label"
+    
+    # Senão, procura por colunas comuns (em ordem de preferência)
+    candidates = [
+        "Termo (PT)", "Termo(PT)", "Termo_PT", "Termo (EN)", "Termo(EN)", "Termo_EN",
+        "label", "LABEL", "Label",
+        "term", "Term", "TERM",
+        "description", "Description", "descricao", "Descrição",
+        "WS", "Precursor", "CP"
+    ]
+    for c in candidates:
         if c in df.columns:
             return c
+    
+    # Fallback: primeira coluna
     return df.columns[0]
 
 def _family_name(name: str) -> str:
