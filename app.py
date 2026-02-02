@@ -1,5 +1,14 @@
 # app.py
 from __future__ import annotations
+
+# --- Path fix (Streamlit Cloud imports) ---------------------------------------
+import sys
+from pathlib import Path
+
+APP_DIR = Path(__file__).resolve().parent
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+
 import streamlit as st
 import pandas as pd
 
@@ -22,31 +31,26 @@ from core.context_builder import (
 from core.dictionaries import aggregate_dict_matches_over_hits
 
 from services.upload_extract import extract_any
+
+# Import resiliente do cliente LLM
 try:
     from services.llm_client import chat
 except Exception:
-    # fallback se llm_client.py estiver na raiz do projeto
     from llm_client import chat
 
 
-# --- Callbacks (DEVEM vir antes dos widgets que usam as keys) -----------------
+# --- Callbacks (antes dos widgets com keys) -----------------------------------
 def clear_draft():
     st.session_state["draft_prompt"] = ""
     st.session_state["analysis_text"] = ""
     st.session_state["upld_texts"] = []
-    st.rerun()
 
 
 def clear_chat():
-    # limpa o histórico usado na renderização
     st.session_state["chat"] = []
-
-    # defensivo: remove possíveis chaves alternativas caso existam em outras versões
     for k in ["messages", "history", "chat_messages", "last_reply", "last_ctx", "last_hits"]:
         if k in st.session_state:
             del st.session_state[k]
-
-    st.rerun()
 
 
 # --- Página -------------------------------------------------------------------
