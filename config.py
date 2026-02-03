@@ -44,7 +44,7 @@ CP_LBL_PARQ    = AN_DIR / "cp_labels.parquet"
 CP_LBL_JSONL   = AN_DIR / "cp_labels.jsonl"
 
 # ---------------- Docs/Prompts ----------------
-PROMPTS_MD_PATH        = DOCS_DIR / "prompts" / "prompts.md"
+PROMPTS_MD_PATH        = DATA_DIR / "prompts" / "prompts.md"
 DATASETS_CONTEXT_PATH  = DATA_DIR / "datasets_context.md"
 
 # ---------------- Modelo (Ollama Cloud) ----------------

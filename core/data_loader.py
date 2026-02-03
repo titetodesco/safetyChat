@@ -209,6 +209,7 @@ def load_history() -> Tuple[pd.DataFrame, np.ndarray]:
 
 
 @st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False)
 def load_prompts_md(path: Path):
     # compatibilidade: app não usa diretamente, mas mantém para não quebrar imports
     path = _coerce_path(path)

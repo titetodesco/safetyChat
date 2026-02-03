@@ -25,26 +25,3 @@ Explique a relação com o caso e proponha recomendações de mitigação de ris
 Realize uma análise integrada usando **Sphera** e dicionários de **Weak Signals, Precursores e CP**.
 Destaque: eventos Sphera (≥ limiar), WS/Precursores/CP correspondentes e um conjunto de lições aprendidas e evidencie os tipos de eventos do Sphera, ou seja, observation, near miss e incidents, apresentando a correlação entre os sinais fracos, precursores e CP x tipos de eventos.
 
-
-## Upload
-
-### 1) Somente Sphera — arquivo(s)
-Analise o(s) arquivo(s) enviado(s) e recupere os eventos da base **Sphera** com maior similaridade de cosseno (arquivo × Description).
-Aplique o limiar definido e apresente: **EVENT ID**, **similaridade**, **Description**, **LOCATION**.
-Conclua com recomendações e boas práticas.
-
-### 2) Análise completa — Sphera + GoSee + Docs + Upload
-Integre **Sphera**, **GoSee**, **Docs** e o conteúdo dos **uploads** (Top-K e limiares da barra lateral).
-Apresente os principais eventos similares e um resumo técnico com recomendações e lições aprendidas.
-
-### 3) Weak Signals com uploads
-Procure **sinais fracos (Weak Signals)** nos arquivos enviados e correlacione com descrições da Sphera.
-Apresente ranking de WS e sugestões de melhoria.
-
-### 4) Precursores + Fatores CP (sobre uploads)
-A partir dos arquivos, identifique **eventos Sphera** (≥ limiar) e mapeie **Precursores** e **Fatores CP** associados.
-Mostre a ligação e recomende ações preventivas.
-
-### 5) Combinado (Sphera + WS + Precursores + CP) — uploads
-Com base nos uploads, faça uma análise integrada: **Sphera**, **WS**, **Precursores**, **CP**.
-Exiba resultados por categoria e um resumo descritivo com recomendações.

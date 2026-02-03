@@ -31,6 +31,20 @@ from core.dictionaries import aggregate_dict_matches_over_hits
 from services.upload_extract import extract_any
 from services.llm_client import chat
 
+# ---------------- Senha de proteção ----------------
+PASSWORD = "cdshell"  # Troque por uma senha forte
+
+def check_password():
+    """Exibe um campo de senha e retorna True se a senha estiver correta."""
+    st.sidebar.header("🔒 Área protegida")
+    password = st.sidebar.text_input("Digite a senha para acessar o app:", type="password")
+    if password == PASSWORD:
+        return True
+    elif password:
+        st.sidebar.error("Senha incorreta. Tente novamente.")
+        return False
+    else:
+        return False
 
 # ---------------- Helpers ----------------
 def _ensure_eventid_column(df: pd.DataFrame) -> pd.DataFrame:
@@ -83,6 +97,11 @@ def clear_chat():
 
 # ---------------- Page ----------------
 st.set_page_config(page_title="SAFETY • CHAT", layout="wide")
+
+# Verificação de senha
+if not check_password():
+    st.stop()  # Interrompe o app até digitar a senha correta
+
 st.title("SAFETY • CHAT")
 
 ss = st.session_state
@@ -93,13 +112,87 @@ ss.setdefault("chat", [])
 
 # carregamentos silenciosos
 _ = load_datasets_context(cfg.DATASETS_CONTEXT_PATH)
-_ = load_prompts_md(cfg.PROMPTS_MD_PATH)
+prompts_md = load_prompts_md(cfg.PROMPTS_MD_PATH)
+
+# Debug: verificar carregamento
+print(f"DEBUG: prompts_md tem {len(prompts_md) if prompts_md else 0} caracteres")
+if prompts_md:
+    print(f"DEBUG: Primeiras 200 chars: {prompts_md[:200]}")
+    print(f"DEBUG: Total de linhas: {len(prompts_md.split(chr(10)))}")
+
+# Parse prompts.md para extrair títulos e corpos
+def parse_prompts(md_text: str) -> list[dict]:
+    """Extrai prompts do markdown (### título seguido de corpo)"""
+    prompts = []
+    lines = md_text.split('\n')
+    current_title = None
+    current_body = []
+    
+    print(f"[DEBUG] parse_prompts recebeu {len(lines)} linhas")
+    
+    for i, line in enumerate(lines):
+        if line.startswith('### '):
+            # Salva prompt anterior
+            if current_title and current_body:
+                prompts.append({
+                    'title': current_title,
+                    'body': '\n'.join(current_body).strip()
+                })
+                print(f"[DEBUG] Prompt salvo: {current_title}")
+            # Novo prompt
+            current_title = line[4:].strip()
+            current_body = []
+            print(f"[DEBUG] Novo prompt encontrado: {current_title}")
+        elif line.startswith('## ') or line.startswith('# '):
+            # Ignora cabeçalhos de seção
+            continue
+        elif current_title is not None:
+            # Adiciona linha ao corpo do prompt atual
+            current_body.append(line)
+    
+    # Salva último prompt
+    if current_title and current_body:
+        prompts.append({
+            'title': current_title,
+            'body': '\n'.join(current_body).strip()
+        })
+        print(f"[DEBUG] Último prompt salvo: {current_title}")
+    
+    print(f"[DEBUG] Total de prompts extraídos: {len(prompts)}")
+    return prompts
+
+prompts_list = parse_prompts(prompts_md)
+
+# Debug: verificar se prompts_list foi populado
+if not prompts_list:
+    st.error(f"⚠️ Nenhum prompt encontrado no arquivo. Verificar data/prompts/prompts.md")
 
 df_sph, E_sph = load_sphera()
 df_sph = _ensure_eventid_column(df_sph)
 
 # ---------------- Sidebar ----------------
 with st.sidebar:
+    st.subheader("Assistente de Prompts")
+    
+    prompt_titles = [p['title'] for p in prompts_list]
+    sel_prompt = st.selectbox(
+        "Selecione um modelo", 
+        options=["(vazio)"] + prompt_titles, 
+        index=0,
+        key="sb_prompt_sel"
+    )
+
+    if st.button("Carregar no rascunho", use_container_width=True):
+        if sel_prompt != "(vazio)":
+            body = next((p['body'] for p in prompts_list if p['title'] == sel_prompt), "")
+            if body:
+                st.session_state.draft_prompt = body
+                st.success(f"✅ '{sel_prompt}' carregado!")
+                st.rerun()
+        else:
+            st.warning("Selecione um prompt primeiro.")
+
+    st.markdown("---")
     st.header("Recuperação – Sphera")
     k_sph = st.slider("Top-K Sphera", 5, 100, 20, step=5, key="sb_topk_sph")
     thr_sph = st.slider("Limiar Sphera (cos)", 0.0, 1.0, 0.30, 0.01, key="sb_thr_sph")
