@@ -64,17 +64,27 @@ def _load_jsonl(path: Optional[Path]) -> Optional[pd.DataFrame]:
 
 def _load_npz_embeddings_strict(path: Optional[Path]) -> np.ndarray:
     path = _coerce_path(path)
-    if not path or not path.exists():
-        raise FileNotFoundError(f"Embeddings NPZ não encontrado: {path}")
-
-    data = np.load(path, allow_pickle=False)
-    # tenta achar a primeira matriz 2D no npz
-    for k in data.files:
-        arr = data[k]
-        if isinstance(arr, np.ndarray) and arr.ndim == 2:
-            return arr.astype(np.float32, copy=False)
-
-    raise ValueError(f"NPZ inválido (nenhuma matriz 2D encontrada): {path}")
+    
+    # Tenta local primeiro
+    if path and path.exists():
+        try:
+            data = np.load(path, allow_pickle=False)
+            for k in data.files:
+                arr = data[k]
+                if isinstance(arr, np.ndarray) and arr.ndim == 2:
+                    return arr.astype(np.float32, copy=False)
+        except Exception as e:
+            print(f"[WARN] Erro ao carregar local {path}: {e}")
+    
+    # Fallback: tenta remoto via GitHub
+    filename = path.name if path else "unknown.npz"
+    if filename in EMBEDDINGS_FALLBACK_URLS:
+        url = EMBEDDINGS_FALLBACK_URLS[filename]
+        remote_arr = _download_embeddings_remote(filename, url)
+        if remote_arr is not None:
+            return remote_arr
+    
+    raise FileNotFoundError(f"Embeddings NPZ não encontrado (local ou remoto): {path}")
 
 
 def _load_labels_any(parquet_path: Optional[Path], jsonl_path: Optional[Path]) -> pd.DataFrame:
