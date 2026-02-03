@@ -212,7 +212,7 @@ with st.sidebar:
     st.header("Agregação sobre eventos recuperados (Sphera)")
     agg_mode = st.selectbox("Agregação", options=["max", "mean"], index=0, key="sb_agg_mode")
     per_event_thr = st.slider("Limiar por evento (dicionários)", 0.0, 1.0, 0.30, 0.01, key="sb_per_event_thr")
-    support_min = st.slider("Suporte mínimo (nº eventos)", 1, 50, 2, 1, key="sb_support_min")
+    support_min = st.slider("Suporte mínimo (nº eventos)", 1, 50, 10, 1, key="sb_support_min")
 
     st.markdown("---")
     thr_ws = st.slider("Limiar WS", 0.0, 1.0, 0.20, 0.01, key="sb_thr_ws")
