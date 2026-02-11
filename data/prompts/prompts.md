@@ -8,6 +8,21 @@ Aplique os parâmetros definidos no menu lateral, em especial o limiar de simila
 Apresente para cada evento: **EVENT ID**, **similaridade (cos)**, **Description** e **LOCATION**.
 Em seguida, apresente recomendações para investigação e lições aprendidas de eventos semelhantes.
 
+Formato obrigatório da saída:
+1) Eventos (Sphera) relacionados a <tema>
+	- liste apenas eventos Sphera recuperados (EventID, similaridade, Description, Location)
+2) Recomendações de investigação
+3) Lições aprendidas (a partir de eventos semelhantes)
+
+Se e somente se houver uma base histórica distinta (diferente de Sphera), adicione:
+4) Histórico - Eventos relacionados a <tema>
+	- não repita eventos Sphera; caso não exista base histórica distinta, NÃO crie esta seção.
+
+Regras:
+- Não repita conteúdo entre seções. Se não houver distinção, explique o motivo em vez de duplicar.
+- Use português claro; evite termos sem sentido (ex.: “isabel”).
+- Não invente rótulos, IDs ou códigos.
+
 ### 2) Sphera + GoSee + Docs + Upload
 Atue como um especialista em segurança operacional offshore. A partir do relato abaixo, realize uma **busca combinada** nas bases **Sphera, GoSee, Docs** e **arquivos enviados via upload**.
 Aplique os Top-K e limiares definidos na barra lateral.

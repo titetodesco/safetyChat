@@ -270,8 +270,9 @@ with c3:
 
 # ---------------- Run ----------------
 if go_btn:
-    # ✅ Retrieval usa texto de análise + uploads (para buscar eventos semelhantes)
-    retrieval_parts = [analysis] + (ss.upld_texts or [])
+    # ✅ Retrieval usa texto de análise + uploads (não usa o prompt como fallback)
+    retrieval_base = analysis.strip() if isinstance(analysis, str) else ""
+    retrieval_parts = [retrieval_base] + (ss.upld_texts or [])
     query_for_retrieval = "\n\n".join([p for p in retrieval_parts if p]).strip()
 
     # input do chat pode ter tudo (prompt + análise + uploads)
@@ -288,7 +289,12 @@ if go_btn:
     df_base = filter_sphera(df_sph, locations, substr, years)
 
     # 2) topk
-    if isinstance(df_base, pd.DataFrame) and not df_base.empty and E_sph is not None and query_for_retrieval:
+    if not query_for_retrieval:
+        st.info(
+            "Texto de análise vazio: não foi possível buscar eventos semelhantes. "
+            "Informe o contexto do evento e, se necessário, ajuste o limiar/Top-K."
+        )
+    elif isinstance(df_base, pd.DataFrame) and not df_base.empty and E_sph is not None:
         if "_rowid" not in df_base.columns:
             st.error("Sphera sem coluna _rowid. Verifique load_sphera() em core/data_loader.py.")
         else:
@@ -337,12 +343,7 @@ if go_btn:
         prec_matches = dic_res.get("Precursores", []) if isinstance(dic_res, dict) else []
         cp_matches = dic_res.get("CP", []) if isinstance(dic_res, dict) else []
 
-    # Mostra WS determinístico
-    st.subheader("Weak Signals (calculado por embeddings, sem LLM)")
-    if ws_matches:
-        st.dataframe(pd.DataFrame(ws_matches, columns=["Sinais Fracos", "Similaridade"]), use_container_width=True, hide_index=True)
-    else:
-        st.info("Nenhum WS acima do limiar atual.")
+    # Weak Signals: ocultado da saída conforme solicitado
 
     # 4) contexto e guardrails
     allowed_event_ids = _safe_event_ids_from_hits(hits)
@@ -352,13 +353,9 @@ if go_btn:
         build_dic_matches_md(dic_res),
     ])
 
-    ws_list = [str(t[0]).strip() for t in ws_matches]
     prec_list = [str(t[0]).strip() for t in prec_matches]
     cp_list = [str(t[0]).strip() for t in cp_matches]
 
-    ws_block = "WS_MATCHES (autoritativo; NÃO invente IDs/códigos):\n" + (
-        "\n".join([f"- {t}" for t in ws_list]) if ws_list else "- (nenhum)\n"
-    )
     prec_block = "PRECURSORES_MATCHES:\n" + (
         "\n".join([f"- {t}" for t in prec_list]) if prec_list else "- (nenhum)\n"
     )
@@ -375,12 +372,15 @@ if go_btn:
         "4) Ao citar eventos, use APENAS EventIDs desta lista (não invente): "
         f"{', '.join(allowed_event_ids) if allowed_event_ids else '(nenhum)'}\n"
         "5) Se não houver termos acima do limiar, diga explicitamente que não encontrou.\n"
+        "6) NÃO repita seções com o mesmo conteúdo; se não houver distinção, explique que é a mesma base.\n"
+        "7) Use português claro e correto; não use rótulos confusos ou palavras sem sentido.\n"
+        "8) NÃO crie seção 'Histórico' separada. A única fonte de dados é Sphera. Apresente os eventos UMA ÚNICA VEZ.\n"
     )
 
     messages = [
         {"role": "system", "content": "Você é o SAFETY • CHAT. Seja preciso e não alucine."},
         {"role": "system", "content": guardrails},
-        {"role": "system", "content": ws_block + "\n\n" + prec_block + "\n\n" + cp_block},
+        {"role": "system", "content": prec_block + "\n\n" + cp_block},
         {"role": "system", "content": "CONTEXTO (eventos recuperados do Sphera):\n" + ctx_full},
         {"role": "user", "content": user_input},
     ]
