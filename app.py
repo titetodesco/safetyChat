@@ -253,9 +253,9 @@ with st.sidebar:
 
     st.markdown("---")
     st.header("Recuperação – Sphera")
-    k_sph = st.slider("Top-K Sphera", 5, 100, 20, step=5, key="sb_topk_sph")
+    k_sph = st.slider("Top-K Sphera", 5, 300, 50, step=5, key="sb_topk_sph")
     thr_sph = st.slider("Limiar Sphera (cos)", 0.0, 1.0, 0.30, 0.01, key="sb_thr_sph")
-    years = st.slider("Últimos N anos", 0, 10, 3, 1, key="sb_years")
+    years = st.slider("Últimos N anos", 0, 10, 5, 1, key="sb_years")
 
     st.header("Filtros avançados – Sphera")
     substr = st.text_input("Description contém (substring)", value="", key="sb_substr")
@@ -269,9 +269,9 @@ with st.sidebar:
     locations = st.multiselect("Location", options=loc_opts, default=[], key="sb_locations")
 
     st.header("Agregação sobre eventos recuperados (Sphera)")
-    agg_mode = st.selectbox("Agregação", options=["max", "mean"], index=0, key="sb_agg_mode")
+    agg_mode = st.selectbox("Agregação", options=["max", "mean"], index=1, key="sb_agg_mode")
     per_event_thr = st.slider("Limiar por evento (dicionários)", 0.0, 1.0, 0.30, 0.01, key="sb_per_event_thr")
-    support_min = st.slider("Suporte mínimo (nº eventos)", 1, 50, 5, 1, key="sb_support_min")
+    support_min = st.slider("Suporte mínimo (nº eventos)", 1, 50, 3, 1, key="sb_support_min")
 
     st.markdown("---")
     thr_ws = st.slider("Limiar WS", 0.0, 1.0, 0.20, 0.01, key="sb_thr_ws")
@@ -591,6 +591,18 @@ if go_btn:
                 + "\n\n---\n"
                 + "Listagem completa (determinística) dos eventos recuperados no Top-K:\n\n"
                 + deterministic_table
+            )
+
+    # garante apresentação tabular no histórico quando houver eventos
+    if hits and not prompt3_mode:
+        has_md_table = bool(re.search(r"^\|.+\|$", str(reply), flags=re.MULTILINE))
+        if not has_md_table:
+            deterministic_table = _build_hits_md_table(hits, loc_col)
+            reply = (
+                "### Eventos recuperados (tabela oficial)\n\n"
+                + deterministic_table
+                + "\n\n---\n"
+                + str(reply)
             )
 
     progress_box.success("✅ Processamento concluído.")
