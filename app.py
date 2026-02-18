@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import re
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -78,11 +79,79 @@ def _safe_event_ids_from_hits(hits) -> list[str]:
     return ids
 
 
-# ---------------- Callbacks ----------------
-def clear_draft():
-    st.session_state["draft_prompt"] = ""
-    st.session_state["analysis_text"] = ""
-    st.session_state["upld_texts"] = []
+def _build_hits_md_table(hits, loc_col: str | None) -> str:
+    if not hits:
+        return ""
+
+    def _pick_event_type(row) -> str:
+        candidates = [
+            "Event Type", "EVENT TYPE", "EventType", "EVENTTYPE",
+            "Tipo Evento", "TIPO EVENTO", "Tipo de Evento", "TIPO DE EVENTO",
+            "Type", "TYPE", "Classification", "Classificação",
+        ]
+        for c in candidates:
+            if hasattr(row, "get"):
+                v = str(row.get(c, "")).strip()
+                if v:
+                    return v
+        return "N/D"
+
+    lines = [
+        "| EventID | Event Type | Similaridade (cos) | LOCATION | Description |",
+        "|---|---|---:|---|---|",
+    ]
+    for evid, sim, row in hits:
+        loc = str(row.get(loc_col, "N/D")).strip() if (loc_col and hasattr(row, "get")) else "N/D"
+        event_type = _pick_event_type(row)
+        desc = str(row.get("Description", "")).replace("\n", " ").strip() if hasattr(row, "get") else ""
+        lines.append(
+            f"| {str(evid).strip()} | {event_type} | {float(sim):.3f} | {loc} | {desc[:220]} |"
+        )
+    return "\n".join(lines)
+
+
+def _build_terms_md_table(title: str, terms: list[tuple]) -> str:
+    lines = [f"### {title}", "| Termo | Score agregado |", "|---|---:|"]
+    if not terms:
+        lines.append("| (nenhum) | 0.000 |")
+        return "\n".join(lines)
+    for label, score in terms:
+        lines.append(f"| {str(label).strip()} | {float(score):.3f} |")
+    return "\n".join(lines)
+
+
+def _build_prompt3_deterministic_reply(
+    query_text: str,
+    hits,
+    ws_matches,
+    prec_matches,
+    cp_matches,
+    loc_col: str | None,
+    thr_sph: float,
+) -> str:
+    q = (query_text or "").strip() or "(texto não informado)"
+    lines = [
+        "## Análise determinística de Weak Signals",
+        f"Consulta: {q}",
+        f"Eventos Sphera recuperados com similaridade ≥ {float(thr_sph):.2f}: {len(hits)}",
+        "",
+        "### Eventos recuperados (Top-K)",
+        _build_hits_md_table(hits, loc_col) if hits else "(nenhum evento recuperado)",
+        "",
+        _build_terms_md_table("Weak Signals encontrados", ws_matches or []),
+        "",
+        _build_terms_md_table("Precursores encontrados", prec_matches or []),
+        "",
+        _build_terms_md_table("Condicionantes de Performance (CP) encontrados", cp_matches or []),
+        "",
+    ]
+
+    if not ws_matches:
+        lines.append("Observação: nenhum WS acima dos critérios atuais (limiar/suporte/agregação).")
+    else:
+        lines.append("Observação: os WS acima já estão restritos aos eventos recuperados do Sphera.")
+
+    return "\n".join(lines)
 
 
 def clear_chat():
@@ -90,6 +159,7 @@ def clear_chat():
     st.session_state["draft_prompt"] = ""
     st.session_state["analysis_text"] = ""
     st.session_state["upld_texts"] = []
+    st.session_state["last_upload_fingerprint"] = None
     for k in ["messages", "history", "chat_messages", "last_reply", "last_ctx", "last_hits"]:
         if k in st.session_state:
             del st.session_state[k]
@@ -109,16 +179,11 @@ ss.setdefault("draft_prompt", "")
 ss.setdefault("analysis_text", "")
 ss.setdefault("upld_texts", [])
 ss.setdefault("chat", [])
+ss.setdefault("last_upload_fingerprint", None)
 
 # carregamentos silenciosos
 _ = load_datasets_context(cfg.DATASETS_CONTEXT_PATH)
 prompts_md = load_prompts_md(cfg.PROMPTS_MD_PATH)
-
-# Debug: verificar carregamento
-print(f"DEBUG: prompts_md tem {len(prompts_md) if prompts_md else 0} caracteres")
-if prompts_md:
-    print(f"DEBUG: Primeiras 200 chars: {prompts_md[:200]}")
-    print(f"DEBUG: Total de linhas: {len(prompts_md.split(chr(10)))}")
 
 # Parse prompts.md para extrair títulos e corpos
 def parse_prompts(md_text: str) -> list[dict]:
@@ -127,10 +192,8 @@ def parse_prompts(md_text: str) -> list[dict]:
     lines = md_text.split('\n')
     current_title = None
     current_body = []
-    
-    print(f"[DEBUG] parse_prompts recebeu {len(lines)} linhas")
-    
-    for i, line in enumerate(lines):
+
+    for line in lines:
         if line.startswith('### '):
             # Salva prompt anterior
             if current_title and current_body:
@@ -138,11 +201,9 @@ def parse_prompts(md_text: str) -> list[dict]:
                     'title': current_title,
                     'body': '\n'.join(current_body).strip()
                 })
-                print(f"[DEBUG] Prompt salvo: {current_title}")
             # Novo prompt
             current_title = line[4:].strip()
             current_body = []
-            print(f"[DEBUG] Novo prompt encontrado: {current_title}")
         elif line.startswith('## ') or line.startswith('# '):
             # Ignora cabeçalhos de seção
             continue
@@ -156,9 +217,7 @@ def parse_prompts(md_text: str) -> list[dict]:
             'title': current_title,
             'body': '\n'.join(current_body).strip()
         })
-        print(f"[DEBUG] Último prompt salvo: {current_title}")
-    
-    print(f"[DEBUG] Total de prompts extraídos: {len(prompts)}")
+
     return prompts
 
 prompts_list = parse_prompts(prompts_md)
@@ -212,7 +271,7 @@ with st.sidebar:
     st.header("Agregação sobre eventos recuperados (Sphera)")
     agg_mode = st.selectbox("Agregação", options=["max", "mean"], index=0, key="sb_agg_mode")
     per_event_thr = st.slider("Limiar por evento (dicionários)", 0.0, 1.0, 0.30, 0.01, key="sb_per_event_thr")
-    support_min = st.slider("Suporte mínimo (nº eventos)", 1, 50, 10, 1, key="sb_support_min")
+    support_min = st.slider("Suporte mínimo (nº eventos)", 1, 50, 5, 1, key="sb_support_min")
 
     st.markdown("---")
     thr_ws = st.slider("Limiar WS", 0.0, 1.0, 0.20, 0.01, key="sb_thr_ws")
@@ -222,6 +281,10 @@ with st.sidebar:
     top_ws = st.slider("Top-N WS", 1, 50, 10, 1, key="sb_top_ws")
     top_prec = st.slider("Top-N Precursores", 1, 50, 10, 1, key="sb_top_prec")
     top_cp = st.slider("Top-N CP", 1, 50, 10, 1, key="sb_top_cp")
+
+    st.markdown("---")
+    if not cfg.OLLAMA_API_KEY:
+        st.error("⚠️ OLLAMA_API_KEY não configurada. O chat do modelo não irá responder.")
 
 # ---------------- Main ----------------
 st.subheader("Conteúdo do prompt")
@@ -252,24 +315,30 @@ upl = st.file_uploader(
 if upl is not None:
     uploaded_text = extract_any(upl)
     if uploaded_text.strip():
-        ss.upld_texts.append(uploaded_text)
-        st.success(f"✅ Upload recebido: {upl.name} ({len(uploaded_text)} caracteres)")
+        current_fingerprint = f"{upl.name}:{getattr(upl, 'size', 0)}"
+        if ss.get("last_upload_fingerprint") != current_fingerprint:
+            ss.upld_texts.append(uploaded_text)
+            ss["last_upload_fingerprint"] = current_fingerprint
+            st.success(f"✅ Upload recebido: {upl.name} ({len(uploaded_text)} caracteres)")
+        else:
+            st.info(f"ℹ️ Arquivo já anexado: {upl.name}")
     else:
         st.warning(
             f"⚠️ Não foi possível extrair texto de {upl.name}. "
             "Possíveis causas: PDF escaneado/imagem, arquivo protegido ou formato não suportado. "
          )
 
-c1, c2, c3 = st.columns([1, 1, 1])
+c1, c2 = st.columns([1, 1])
 with c1:
     go_btn = st.button("Enviar para o chat", type="primary")
 with c2:
-    st.button("Limpar rascunho", on_click=clear_draft)
-with c3:
-    st.button("Limpar chat", on_click=clear_chat)
+    st.button("Limpar chat e campos", on_click=clear_chat)
 
 # ---------------- Run ----------------
 if go_btn:
+    progress_box = st.empty()
+    progress_box.info("⏳ Processando consulta (na primeira execução pode demorar para carregar embeddings/modelo)...")
+
     # ✅ Retrieval usa texto de análise + uploads (não usa o prompt como fallback)
     retrieval_base = analysis.strip() if isinstance(analysis, str) else ""
     retrieval_parts = [retrieval_base] + (ss.upld_texts or [])
@@ -281,7 +350,8 @@ if go_btn:
 
     # sempre inicializa (evita NameError)
     hits = []
-    dic_res, debug_raw = {"WS": [], "Precursores": [], "CP": []}, {}
+    dic_res = {"WS": [], "Precursores": [], "CP": []}
+    debug_raw = {"RAW_WS": [], "RAW_PREC": [], "RAW_CP": []}
     ws_matches, prec_matches, cp_matches = [], [], []
 
     # 1) filtra df
@@ -343,6 +413,60 @@ if go_btn:
         prec_matches = dic_res.get("Precursores", []) if isinstance(dic_res, dict) else []
         cp_matches = dic_res.get("CP", []) if isinstance(dic_res, dict) else []
 
+    st.subheader("Diagnóstico da recuperação")
+    cdx1, cdx2, cdx3, cdx4 = st.columns(4)
+    cdx1.metric("Eventos recuperados", len(hits))
+    cdx2.metric("WS finais", len(ws_matches))
+    cdx3.metric("Precursores finais", len(prec_matches))
+    cdx4.metric("CP finais", len(cp_matches))
+
+    with st.expander("Ver detalhes do diagnóstico"):
+        st.markdown(
+            f"- Parâmetros: `Top-K={int(k_sph)}`, `limiar_sphera={float(thr_sph):.2f}`, "
+            f"`per_event_thr={float(per_event_thr):.2f}`, `support_min={int(support_min)}`, `agg_mode={str(agg_mode)}`"
+        )
+        st.markdown(
+            f"- Limiar dicionários: `WS={float(thr_ws):.2f}`, `Precursores={float(thr_prec):.2f}`, `CP={float(thr_cp):.2f}`"
+        )
+
+        raw_ws = debug_raw.get("RAW_WS", []) if isinstance(debug_raw, dict) else []
+        raw_prec = debug_raw.get("RAW_PREC", []) if isinstance(debug_raw, dict) else []
+        raw_cp = debug_raw.get("RAW_CP", []) if isinstance(debug_raw, dict) else []
+
+        st.markdown(
+            f"- Candidatos brutos (antes de suporte+limiar final): "
+            f"`WS={len(raw_ws)}`, `Precursores={len(raw_prec)}`, `CP={len(raw_cp)}`"
+        )
+
+        if raw_ws:
+            st.markdown("**Top WS brutos (debug)**")
+            st.dataframe(
+                pd.DataFrame(raw_ws, columns=["WS", "score_bruto_max"]).head(10),
+                use_container_width=True,
+                hide_index=True,
+            )
+        if raw_prec:
+            st.markdown("**Top Precursores brutos (debug)**")
+            st.dataframe(
+                pd.DataFrame(raw_prec, columns=["Precursor", "score_bruto_max"]).head(10),
+                use_container_width=True,
+                hide_index=True,
+            )
+        if raw_cp:
+            st.markdown("**Top CP brutos (debug)**")
+            st.dataframe(
+                pd.DataFrame(raw_cp, columns=["CP", "score_bruto_max"]).head(10),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        if not ws_matches and raw_ws:
+            st.info("WS tiveram candidatos brutos, mas foram filtrados por limiar/suporte/agregação.")
+        if not prec_matches and raw_prec:
+            st.info("Precursores tiveram candidatos brutos, mas foram filtrados por limiar/suporte/agregação.")
+        if not cp_matches and raw_cp:
+            st.info("CP tiveram candidatos brutos, mas foram filtrados por limiar/suporte/agregação.")
+
     # Weak Signals: ocultado da saída conforme solicitado
 
     # 4) contexto e guardrails
@@ -353,8 +477,13 @@ if go_btn:
         build_dic_matches_md(dic_res),
     ])
 
+    ws_list = [str(t[0]).strip() for t in ws_matches]
     prec_list = [str(t[0]).strip() for t in prec_matches]
     cp_list = [str(t[0]).strip() for t in cp_matches]
+
+    ws_block = "WS_MATCHES:\n" + (
+        "\n".join([f"- {t}" for t in ws_list]) if ws_list else "- (nenhum)\n"
+    )
 
     prec_block = "PRECURSORES_MATCHES:\n" + (
         "\n".join([f"- {t}" for t in prec_list]) if prec_list else "- (nenhum)\n"
@@ -367,46 +496,111 @@ if go_btn:
         "REGRAS OBRIGATÓRIAS:\n"
         f"1) Considere TODOS os eventos Sphera recuperados (limiar de recuperação: ≥ {thr_sph:.2f}). "
         "NÃO crie ou aplique novos limiares arbitrários (como 0,60 ou outros valores).\n"
-        "2) NÃO invente WS/Precursores/CP. Use APENAS os termos listados em *_MATCHES.\n"
+        "2) NÃO invente WS/Precursores/CP. Use APENAS os termos listados em nos dicionários *_MATCHES.\n"
         "3) NÃO use 'WS ID', 'WS code', 'WS1/WS2' ou numeração. O dicionário não tem IDs.\n"
         "4) Ao citar eventos, use APENAS EventIDs desta lista (não invente): "
         f"{', '.join(allowed_event_ids) if allowed_event_ids else '(nenhum)'}\n"
-        "5) Se não houver termos acima do limiar, diga explicitamente que não encontrou.\n"
-        "6) NÃO repita seções com o mesmo conteúdo; se não houver distinção, explique que é a mesma base.\n"
-        "7) Use português claro e correto; não use rótulos confusos ou palavras sem sentido.\n"
-        "8) NÃO crie seção 'Histórico' separada. A única fonte de dados é Sphera. Apresente os eventos UMA ÚNICA VEZ.\n"
+        "5) 'Event Type' e 'Tipo de Evento' são equivalentes; use os valores do Sphera sem traduzir livremente.\n"
+        "6) Se não houver termos acima do limiar, diga explicitamente que não encontrou.\n"
+        "7) WS/Precursores/CP devem ser APENAS dos blocos *_MATCHES recebidos; não invente termos por interpretação livre.\n"
+        "8) Se WS_MATCHES estiver '(nenhum)', NÃO liste Weak Signals; apenas diga que não houve WS acima do limiar.\n"
+        "9) CP significa EXCLUSIVAMENTE 'Condicionantes de Performance'. NUNCA expanda CP como 'Contribuição Principal'.\n"
+        "10) NÃO repita seções com o mesmo conteúdo; se não houver distinção, explique que é a mesma base.\n"
+        "11) Use português claro e correto; não use rótulos confusos ou palavras sem sentido.\n"
+        "12) NÃO crie seção 'Histórico' separada. A única fonte de dados é Sphera. Apresente os eventos UMA ÚNICA VEZ.\n"
+        f"13) Liste EXATAMENTE {len(allowed_event_ids)} eventos (nem mais, nem menos), mantendo a ordem de similaridade recebida.\n"
+        "14) NÃO aplique novo corte de similaridade (ex.: 0.59, 0.60). Use somente o limiar já aplicado na recuperação.\n"
     )
 
-    messages = [
-        {"role": "system", "content": "Você é o SAFETY • CHAT. Seja preciso e não alucine."},
-        {"role": "system", "content": guardrails},
-        {"role": "system", "content": prec_block + "\n\n" + cp_block},
-        {"role": "system", "content": "CONTEXTO (eventos recuperados do Sphera):\n" + ctx_full},
-        {"role": "user", "content": user_input},
-    ]
+    cp_glossary = (
+        "GLOSSÁRIO DE TERMOS:\n"
+        "- CP = Condicionantes de Performance (taxonomia CP).\n"
+        "- É proibido usar: 'Contribuição Principal' para CP.\n"
+    )
 
-    try:
-        res = chat(messages, stream=False)
-        reply = res.get("message", {}).get("content", "(sem conteúdo)")
-    except Exception as e:
-        reply = f"Falha ao consultar o modelo: {e}"
+    required_events_block = (
+        "EVENTOS_OBRIGATORIOS (deve citar todos):\n"
+        + ("\n".join([f"- {eid}" for eid in allowed_event_ids]) if allowed_event_ids else "- (nenhum)")
+    )
 
-    # bloqueio simples se insistir em IDs
-    rl = reply.lower()
-    if ("ws id" in rl) or ("ws code" in rl) or ("ws1" in rl) or ("ws2" in rl) or ("ws3" in rl):
-        reply = (
-            "⚠️ A resposta do modelo foi bloqueada porque tentou inventar códigos/IDs de WS.\n\n"
-            "Use a tabela 'Weak Signals (calculado por embeddings, sem LLM)' como fonte.\n"
+    prompt3_mode = isinstance(sel_prompt, str) and ("weak signals" in sel_prompt.lower())
+
+    if prompt3_mode:
+        reply = _build_prompt3_deterministic_reply(
+            query_text=query_for_retrieval,
+            hits=hits,
+            ws_matches=ws_matches,
+            prec_matches=prec_matches,
+            cp_matches=cp_matches,
+            loc_col=loc_col,
+            thr_sph=float(thr_sph),
         )
+    else:
+        messages = [
+            {"role": "system", "content": "Você é o SAFETY • CHAT. Seja preciso e não alucine."},
+            {"role": "system", "content": cp_glossary},
+            {"role": "system", "content": guardrails},
+            {"role": "system", "content": required_events_block},
+            {"role": "system", "content": ws_block + "\n\n" + prec_block + "\n\n" + cp_block},
+            {"role": "system", "content": "CONTEXTO (eventos recuperados do Sphera):\n" + ctx_full},
+            {"role": "user", "content": user_input},
+        ]
 
-    with st.chat_message("assistant"):
-        st.markdown(reply)
+        try:
+            if not cfg.OLLAMA_API_KEY:
+                reply = (
+                    "Falha ao consultar o modelo: OLLAMA_API_KEY não configurada. "
+                    "Defina a variável de ambiente/secrets e tente novamente."
+                )
+            else:
+                res = chat(messages, stream=False, timeout=int(cfg.OLLAMA_TIMEOUT))
+                reply = res.get("message", {}).get("content", "(sem conteúdo)")
+        except Exception as e:
+            reply = f"Falha ao consultar o modelo: {e}"
+
+    if not prompt3_mode:
+        # higieniza vazamento de blocos internos/guardrails na resposta visível
+        leaked_prefixes = (
+            "REGRAS OBRIGATÓRIAS:",
+            "EVENTOS_OBRIGATORIOS",
+            "WS_MATCHES:",
+            "PRECURSORES_MATCHES:",
+            "CP_MATCHES:",
+        )
+        reply_lines = [ln for ln in str(reply).splitlines() if not ln.strip().startswith(leaked_prefixes)]
+        reply = "\n".join(reply_lines).strip() or "(sem conteúdo)"
+
+        # normaliza menções inválidas de códigos WS sem bloquear a resposta inteira
+        has_ws_code = bool(re.search(r"\bws\s*(id|code)\b|\bws\s*\d+\b", reply, flags=re.IGNORECASE))
+        if has_ws_code:
+            reply = re.sub(r"\bWS\s*(ID|Code)\b", "WS", reply, flags=re.IGNORECASE)
+            reply = re.sub(r"\bWS\s*\d+\b", "WS", reply, flags=re.IGNORECASE)
+
+        # normaliza expansão incorreta de CP
+        reply = re.sub(r"Contribui[cç][aã]o\s+Principal", "Condicionantes de Performance", reply, flags=re.IGNORECASE)
+        reply = re.sub(r"Fatores\s+de\s+Contribui[cç][aã]o\s+Principal\s*\(\s*CP\s*\)", "Condicionantes de Performance (CP)", reply, flags=re.IGNORECASE)
+
+    if allowed_event_ids and not prompt3_mode:
+        rl = reply.lower()
+        missing_ids = [eid for eid in allowed_event_ids if str(eid).lower() not in rl]
+        if len(missing_ids) > max(2, len(allowed_event_ids) // 3):
+            deterministic_table = _build_hits_md_table(hits, loc_col)
+            reply = (
+                reply
+                + "\n\n---\n"
+                + "Listagem completa (determinística) dos eventos recuperados no Top-K:\n\n"
+                + deterministic_table
+            )
+
+    progress_box.success("✅ Processamento concluído.")
+
     ss.chat.append({"role": "assistant", "content": reply})
 
 # ---------------- History ----------------
 if ss.get("chat"):
     st.divider()
     st.subheader("Histórico")
-    for m in ss.chat[-10:]:
+    only_assistant = [m for m in ss.chat if m.get("role") == "assistant"]
+    for m in only_assistant[-10:]:
         with st.chat_message("assistant"):
             st.markdown(m.get("content", ""))

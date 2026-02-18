@@ -41,6 +41,18 @@ def _first_present(row: Any, keys: list[str], default: str = "N/D") -> str:
             return v
     return default
 
+
+def _event_type_from_row(row: Any) -> str:
+    return _first_present(
+        row,
+        [
+            "Event Type", "EVENT TYPE", "EventType", "EVENTTYPE",
+            "Tipo Evento", "TIPO EVENTO", "Tipo de Evento", "TIPO DE EVENTO",
+            "Type", "TYPE", "Classification", "Classificação",
+        ],
+        default="N/D",
+    )
+
 def hits_dataframe(hits, loc_col: str | None):
     """
     hits: lista de tuplas (event_id: str, score: float, row: pd.Series|dict)
@@ -56,9 +68,11 @@ def hits_dataframe(hits, loc_col: str | None):
             # entrada inesperada; ignora este hit
             continue
         loc  = getter(loc_col, "N/D") if loc_col else "N/D"
+        event_type = _event_type_from_row(row)
         desc = str(getter("Description", "")) or str(getter("Observation", ""))
         rows.append({
             "EventID": evid,
+            "Event Type": event_type,
             "Similaridade (cos)": round(float(s), 3),
             "LOCATION": loc,
             "Description": desc,
@@ -76,12 +90,16 @@ def build_dic_matches_md(dic_res: Dict[str, list]) -> str:
     return "\n".join(lines) + "\n"
 
 def build_sphera_context_md(hits: List[Tuple[str, float, Any]], loc_col: str | None) -> str:
-    lines = ["=== Sphera ===", "EventID\tSimilaridade\tLOCATION\tDescrição"]
+    lines = [
+        "=== Sphera ===",
+        "EventID\tEvent Type\tTipo de Evento\tSimilaridade\tLOCATION\tDescrição",
+    ]
     for evid, s, row in (hits or []):
         sim = _to_float(s)
+        event_type = _event_type_from_row(row)
         loc = _row_get(row, loc_col, "N/D") if loc_col else "N/D"
         desc = _first_present(row, ["Description", "DESCRIÇÃO", "DESCRIPTION"], default="").replace("\n", " ").strip()
-        lines.append(f"{evid}\t{sim:.3f}\t{loc}\t{desc}")
+        lines.append(f"{evid}\t{event_type}\t{event_type}\t{sim:.3f}\t{loc}\t{desc}")
     return "\n".join(lines) + "\n"
 
 def build_gosee_context_md(hits: List[Tuple[str, float, Any]]) -> str:
