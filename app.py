@@ -505,11 +505,12 @@ if go_btn:
         "7) WS/Precursores/CP devem ser APENAS dos blocos *_MATCHES recebidos; não invente termos por interpretação livre.\n"
         "8) Se WS_MATCHES estiver '(nenhum)', NÃO liste Weak Signals; apenas diga que não houve WS acima do limiar.\n"
         "9) CP significa EXCLUSIVAMENTE 'Condicionantes de Performance'. NUNCA expanda CP como 'Contribuição Principal'.\n"
-        "10) NÃO repita seções com o mesmo conteúdo; se não houver distinção, explique que é a mesma base.\n"
-        "11) Use português claro e correto; não use rótulos confusos ou palavras sem sentido.\n"
-        "12) NÃO crie seção 'Histórico' separada. A única fonte de dados é Sphera. Apresente os eventos UMA ÚNICA VEZ.\n"
-        f"13) Liste EXATAMENTE {len(allowed_event_ids)} eventos (nem mais, nem menos), mantendo a ordem de similaridade recebida.\n"
-        "14) NÃO aplique novo corte de similaridade (ex.: 0.59, 0.60). Use somente o limiar já aplicado na recuperação.\n"
+        "10) NÃO recrie tabela/lista de eventos no texto final: a tabela oficial de eventos já é exibida pelo app com EventID/Event Type corretos.\n"
+        "11) No texto final, foque em síntese, padrões, recomendações e lições aprendidas com base nos eventos recuperados.\n"
+        "12) NÃO repita seções com o mesmo conteúdo; se não houver distinção, explique que é a mesma base.\n"
+        "13) Use português claro e correto; não use rótulos confusos ou palavras sem sentido.\n"
+        "14) NÃO crie seção 'Histórico' separada. A única fonte de dados é Sphera.\n"
+        "15) NÃO aplique novo corte de similaridade (ex.: 0.59, 0.60). Use somente o limiar já aplicado na recuperação.\n"
     )
 
     cp_glossary = (
