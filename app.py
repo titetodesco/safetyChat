@@ -581,30 +581,6 @@ if go_btn:
         reply = re.sub(r"Contribui[cç][aã]o\s+Principal", "Condicionantes de Performance", reply, flags=re.IGNORECASE)
         reply = re.sub(r"Fatores\s+de\s+Contribui[cç][aã]o\s+Principal\s*\(\s*CP\s*\)", "Condicionantes de Performance (CP)", reply, flags=re.IGNORECASE)
 
-    if allowed_event_ids and not prompt3_mode:
-        rl = reply.lower()
-        missing_ids = [eid for eid in allowed_event_ids if str(eid).lower() not in rl]
-        if len(missing_ids) > max(2, len(allowed_event_ids) // 3):
-            deterministic_table = _build_hits_md_table(hits, loc_col)
-            reply = (
-                reply
-                + "\n\n---\n"
-                + "Listagem completa (determinística) dos eventos recuperados no Top-K:\n\n"
-                + deterministic_table
-            )
-
-    # garante apresentação tabular no histórico quando houver eventos
-    if hits and not prompt3_mode:
-        has_md_table = bool(re.search(r"^\|.+\|$", str(reply), flags=re.MULTILINE))
-        if not has_md_table:
-            deterministic_table = _build_hits_md_table(hits, loc_col)
-            reply = (
-                "### Eventos recuperados (tabela oficial)\n\n"
-                + deterministic_table
-                + "\n\n---\n"
-                + str(reply)
-            )
-
     progress_box.success("✅ Processamento concluído.")
 
     ss.chat.append({"role": "assistant", "content": reply})
