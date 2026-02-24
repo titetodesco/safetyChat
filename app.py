@@ -270,13 +270,13 @@ with st.sidebar:
 
     st.header("Agregação sobre eventos recuperados (Sphera)")
     agg_mode = st.selectbox("Agregação", options=["max", "mean"], index=1, key="sb_agg_mode")
-    per_event_thr = st.slider("Limiar por evento (dicionários)", 0.0, 1.0, 0.30, 0.01, key="sb_per_event_thr")
+    per_event_thr = st.slider("Limiar por evento (dicionários)", 0.0, 1.0, 0.40, 0.01, key="sb_per_event_thr")
     support_min = st.slider("Suporte mínimo (nº eventos)", 1, 50, 3, 1, key="sb_support_min")
 
     st.markdown("---")
-    thr_ws = st.slider("Limiar WS", 0.0, 1.0, 0.20, 0.01, key="sb_thr_ws")
-    thr_prec = st.slider("Limiar Precursores", 0.0, 1.0, 0.20, 0.01, key="sb_thr_prec")
-    thr_cp = st.slider("Limiar CP", 0.0, 1.0, 0.20, 0.01, key="sb_thr_cp")
+    thr_ws = st.slider("Limiar WS", 0.0, 1.0, 0.30, 0.01, key="sb_thr_ws")
+    thr_prec = st.slider("Limiar Precursores", 0.0, 1.0, 0.30, 0.01, key="sb_thr_prec")
+    thr_cp = st.slider("Limiar CP", 0.0, 1.0, 0.30, 0.01, key="sb_thr_cp")
 
     top_ws = st.slider("Top-N WS", 1, 150, 50, 1, key="sb_top_ws")
     top_prec = st.slider("Top-N Precursores", 1, 150, 50, 1, key="sb_top_prec")
