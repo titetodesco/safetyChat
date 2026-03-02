@@ -254,7 +254,7 @@ with st.sidebar:
     st.markdown("---")
     st.header("Recuperação – Sphera")
     k_sph = st.slider("Top-K Sphera", 5, 300, 50, step=5, key="sb_topk_sph")
-    thr_sph = st.slider("Limiar Sphera (cos)", 0.0, 1.0, 0.30, 0.01, key="sb_thr_sph")
+    thr_sph = st.slider("Limiar Sphera (cos)", 0.0, 1.0, 0.45, 0.01, key="sb_thr_sph")
     years = st.slider("Últimos N anos", 0, 10, 5, 1, key="sb_years")
 
     st.header("Filtros avançados – Sphera")
@@ -271,16 +271,16 @@ with st.sidebar:
     st.header("Agregação sobre eventos recuperados (Sphera)")
     agg_mode = st.selectbox("Agregação", options=["max", "mean"], index=1, key="sb_agg_mode")
     per_event_thr = st.slider("Limiar por evento (dicionários)", 0.0, 1.0, 0.40, 0.01, key="sb_per_event_thr")
-    support_min = st.slider("Suporte mínimo (nº eventos)", 1, 50, 3, 1, key="sb_support_min")
+    support_min = st.slider("Suporte mínimo (nº eventos)", 1, 10, 3, 1, key="sb_support_min")
 
     st.markdown("---")
-    thr_ws = st.slider("Limiar WS", 0.0, 1.0, 0.30, 0.01, key="sb_thr_ws")
-    thr_prec = st.slider("Limiar Precursores", 0.0, 1.0, 0.30, 0.01, key="sb_thr_prec")
-    thr_cp = st.slider("Limiar CP", 0.0, 1.0, 0.30, 0.01, key="sb_thr_cp")
+    thr_ws = st.slider("Limiar WS", 0.0, 1.0, 0.40, 0.01, key="sb_thr_ws")
+    thr_prec = st.slider("Limiar Precursores", 0.0, 1.0, 0.40, 0.01, key="sb_thr_prec")
+    thr_cp = st.slider("Limiar CP", 0.0, 1.0, 0.40, 0.01, key="sb_thr_cp")
 
-    top_ws = st.slider("Top-N WS", 1, 150, 50, 1, key="sb_top_ws")
-    top_prec = st.slider("Top-N Precursores", 1, 150, 50, 1, key="sb_top_prec")
-    top_cp = st.slider("Top-N CP", 1, 150, 50, 1, key="sb_top_cp")
+    top_ws = st.slider("Top-N WS", 1, 100, 50, 1, key="sb_top_ws")
+    top_prec = st.slider("Top-N Precursores", 1, 100, 50, 1, key="sb_top_prec")
+    top_cp = st.slider("Top-N CP", 1, 100, 50, 1, key="sb_top_cp")
 
     st.markdown("---")
     if not cfg.OLLAMA_API_KEY:
