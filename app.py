@@ -278,9 +278,9 @@ with st.sidebar:
     thr_prec = st.slider("Limiar Precursores", 0.0, 1.0, 0.40, 0.01, key="sb_thr_prec")
     thr_cp = st.slider("Limiar CP", 0.0, 1.0, 0.40, 0.01, key="sb_thr_cp")
 
-    top_ws = st.slider("Top-N WS", 1, 100, 50, 1, key="sb_top_ws")
-    top_prec = st.slider("Top-N Precursores", 1, 100, 50, 1, key="sb_top_prec")
-    top_cp = st.slider("Top-N CP", 1, 100, 50, 1, key="sb_top_cp")
+    top_ws = st.slider("Top-N WS", 1, 100, 25, 1, key="sb_top_ws")
+    top_prec = st.slider("Top-N Precursores", 1, 100, 25, 1, key="sb_top_prec")
+    top_cp = st.slider("Top-N CP", 1, 100, 25, 1, key="sb_top_cp")
 
     st.markdown("---")
     if not cfg.OLLAMA_API_KEY:
